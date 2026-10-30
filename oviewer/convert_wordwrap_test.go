@@ -1,0 +1,179 @@
+package oviewer
+
+import (
+	"testing"
+)
+
+func TestConvertWordwrap(t *testing.T) {
+	tests := []struct {
+		name        string
+		screenWidth int
+		str         string
+		tabWidth    int
+		wantStr     string
+	}{
+		{
+			name:        "empty content",
+			screenWidth: 10,
+			str:         "",
+			tabWidth:    4,
+			wantStr:     "",
+		},
+		{
+			name:        "zero screen width ",
+			screenWidth: 0,
+			str:         "abcdefghij",
+			tabWidth:    4,
+			wantStr:     "abcdefghij",
+		},
+		{
+			name:        "count exceeds screen width",
+			screenWidth: 10,
+			str:         "abcdefghij",
+			tabWidth:    4,
+			wantStr:     "abcdefghij",
+		},
+		{
+			name:        "word wrap without wrap target",
+			screenWidth: 10,
+			str:         "abcdefghijklmno",
+			tabWidth:    4,
+			wantStr:     "abcdefghijklmno",
+		},
+		{
+			name:        "word wrap with wrap target",
+			screenWidth: 10,
+			str:         "abcdef ghijkl mnd",
+			tabWidth:    4,
+			wantStr:     "abcdef    ghijkl mnd",
+		},
+		{
+			name:        "word wrap with hyphen wrap target",
+			screenWidth: 5,
+			str:         "abcd-efg",
+			tabWidth:    4,
+			wantStr:     "abcd-efg",
+		},
+		{
+			name:        "no wrap with dot punctuation",
+			screenWidth: 5,
+			str:         "abcd.efgh",
+			tabWidth:    4,
+			wantStr:     "abcd.efgh",
+		},
+		{
+			name:        "word wrap with Japanese punctuation wrap target",
+			screenWidth: 5,
+			str:         "abcd、efg",
+			tabWidth:    4,
+			wantStr:     "abcd 、efg",
+		},
+		{
+			name:        "mixed Japanese and English with space wrap target",
+			screenWidth: 5,
+			str:         "abc あいう",
+			tabWidth:    4,
+			wantStr:     "abc  あい う",
+		},
+		{
+			name:        "mixed Japanese and English with Japanese punctuation wrap target",
+			screenWidth: 5,
+			str:         "abc、あいう",
+			tabWidth:    4,
+			wantStr:     "abc、あい う",
+		},
+		{
+			name:        "Japanese first then English word separated by space",
+			screenWidth: 5,
+			str:         "あいう abcd",
+			tabWidth:    4,
+			wantStr:     "あい う   abcd",
+		},
+		{
+			name:        "just fit with space wrap target",
+			screenWidth: 10,
+			str:         "0123456789 0123456789",
+			tabWidth:    4,
+			wantStr:     "01234567890123456789",
+		},
+		{
+			name:        "long word spanning multiple rows followed by a word",
+			screenWidth: 5,
+			str:         "abcdefghijklmn op",
+			tabWidth:    4,
+			wantStr:     "abcdefghijklmn op",
+		},
+		{
+			name:        "long word spanning multiple rows then wrap to a new row",
+			screenWidth: 10,
+			str:         "aa bbbbbbbbbbbbbbbbbbbbbbbbb cc",
+			tabWidth:    4,
+			wantStr:     "aa bbbbbbbbbbbbbbbbbbbbbbbbb  cc",
+		},
+		{
+			name:        "escape sequence",
+			str:         "abc\x1b[31mdef\x1b[0mghi",
+			tabWidth:    4,
+			screenWidth: 5,
+			wantStr:     "abcdefghi",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			converter := newWordwrapConverter(tt.screenWidth, "0")
+			result, _ := parseLine(converter, tt.str, tt.tabWidth)
+
+			if result.String() != tt.wantStr {
+				t.Errorf("expected string %q, got %q", tt.wantStr, result.String())
+			}
+		})
+	}
+}
+
+func TestNewWordwrapConverterDisablesIndentThatDoesNotFit(t *testing.T) {
+	converter := newWordwrapConverter(4, "4")
+
+	if converter.indentWidth != 0 {
+		t.Errorf("indentWidth = %d, want 0", converter.indentWidth)
+	}
+}
+
+func TestConvertWordwrapBreakIndentAcrossMultipleRows(t *testing.T) {
+	converter := newWordwrapConverter(10, "2")
+	result, _ := parseLine(converter, "aaa bbb ccc ddd eee fff ggg", 4)
+
+	const want = "aaa bbb   " +
+		"  ccc ddd " +
+		"  eee fff " +
+		"  ggg"
+	if result.String() != want {
+		t.Errorf("expected string %q, got %q", want, result.String())
+	}
+}
+
+func TestConvertWordwrapRelativeIndent(t *testing.T) {
+	tests := []struct {
+		name   string
+		indent string
+		input  string
+		want   string
+	}{
+		{name: "add to line indent", indent: "L+2", input: "    aaa bbb ccc", want: "    aaa   " + "      bbb " + "      ccc"},
+		{name: "add to line indent with shorthand plus prefix", indent: "+2", input: "    aaa bbb ccc", want: "    aaa   " + "      bbb " + "      ccc"},
+		{name: "subtract from line indent", indent: "L-2", input: "    aaa bbb ccc", want: "    aaa   " + "  bbb ccc"},
+		{name: "keep line indent", indent: "L+0", input: "    aaa bbb ccc", want: "    aaa   " + "    bbb   " + "    ccc"},
+		{name: "keep line indent with minimal L shorthand", indent: "L", input: "    aaa bbb ccc", want: "    aaa   " + "    bbb   " + "    ccc"},
+		{name: "keep line indent with plus zero shorthand", indent: "+0", input: "    aaa bbb ccc", want: "    aaa   " + "    bbb   " + "    ccc"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			converter := newWordwrapConverter(10, tt.indent)
+			result, _ := parseLine(converter, tt.input, 4)
+			if result.String() != tt.want {
+				t.Errorf("expected string %q, got %q", tt.want, result.String())
+			}
+		})
+	}
+}

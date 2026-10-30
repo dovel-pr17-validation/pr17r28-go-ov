@@ -1,0 +1,739 @@
+package main
+
+import (
+	"bytes"
+	_ "embed"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/noborus/ov/oviewer"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
+	"golang.org/x/term"
+)
+
+var (
+	// Version represents the version.
+	Version = "dev"
+	// Revision set "git rev-parse --short HEAD".
+	Revision = "HEAD"
+)
+
+var (
+	// cfgFile is the configuration file name.
+	cfgFile string
+	// config is the oviewer setting.
+	config oviewer.Config
+
+	// pattern is search pattern.
+	pattern string
+
+	// filter is filter pattern.
+	filter string
+	// non match filter pattern.
+	nonMatchFilter string
+
+	// markByPattern is mark by pattern.
+	markByPattern string
+
+	// ver is version information.
+	ver bool
+	// helpKey is key bind information.
+	helpKey bool
+	// listViewMode is list view mode.
+	listViewMode bool
+	// completion is the generation of shell completion.
+	completion string
+	// generateConfig is the generation of configuration file content.
+	generateConfig string
+	// execCommand targets the output of executing the command.
+	execCommand bool
+
+	// forceScreen is display screen even when redirecting output.
+	forceScreen bool
+)
+
+var (
+	// ErrCompletion indicates that the completion argument was invalid.
+	ErrCompletion = errors.New("requires one of the arguments bash/zsh/fish/powershell")
+	// ErrNoArgument indicating that there are no arguments to execute.
+	ErrNoArgument = errors.New("no arguments to execute")
+	// ErrMissingFile indicates that the file is missing.
+	ErrMissingFile = errors.New("missing file")
+	// ErrGenerateConfigArg suggests using '=' style for generate-config mode.
+	ErrGenerateConfigArg = errors.New("requires an argument; use --generate-config=default or --generate-config=less")
+)
+
+const keybindTag = "{{KEYBIND}}"
+
+//go:embed ov.yaml.template
+var configTemplate string
+
+// rootCmd represents the base command when called without any subcommands.
+var rootCmd = &cobra.Command{
+	Use:   "ov",
+	Short: "ov is a feature rich pager",
+	Long: `ov is a feature rich pager(such as more/less).
+It supports various compressed files(gzip, bzip2, zstd, lz4, and xz).
+`,
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if config.Debug {
+			cfg := viper.ConfigFileUsed()
+			if cfg != "" {
+				fmt.Fprintln(os.Stderr, "Using config file:", cfg)
+			} else {
+				fmt.Fprintln(os.Stderr, "config file not found")
+			}
+		}
+
+		if ver {
+			fmt.Printf("ov version %s rev:%s\n", Version, Revision)
+			return nil
+		}
+		if helpKey {
+			HelpKey(cmd, args)
+			return nil
+		}
+		if listViewMode {
+			ListViewMode()
+			return nil
+		}
+
+		if completion != "" {
+			return Completion(cmd, completion)
+		}
+
+		if generateConfig != "" {
+			return GenerateConfig(generateConfig, args)
+		}
+		// Set a global variable to convert to a style before opening the file.
+		oviewer.OverStrikeStyle = oviewer.ToTcellStyle(config.StyleOverStrike)
+		oviewer.OverLineStyle = oviewer.ToTcellStyle(config.StyleOverLine)
+		oviewer.MemoryLimit = config.MemoryLimit
+		oviewer.MemoryLimitFile = config.MemoryLimitFile
+		if !forceScreen {
+			SetRedirect()
+		}
+		// Do not display the screen if redirected (unless forceScreen is specified).
+		if oviewer.STDOUTPIPE != nil && !forceScreen {
+			return copyOutput(args)
+		}
+
+		if execCommand {
+			return ExecCommand(args)
+		}
+		return RunOviewer(args)
+	},
+}
+
+// GenerateConfig writes generated config to stdout.
+// mode supports "default" and "less".
+func GenerateConfig(mode string, args []string) error {
+	if mode == "default" && len(args) > 0 { // Prevent `--generate-config less`
+		return ErrGenerateConfigArg
+	}
+	content, err := renderConfigTemplate(mode)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprint(os.Stdout, content)
+	return err
+}
+
+func renderConfigTemplate(mode string) (string, error) {
+	var keyBind oviewer.KeyBind
+	switch mode {
+	case "default":
+		keyBind = oviewer.DefaultKeyBinds()
+	case "less":
+		keyBind = oviewer.LessKeyBinds()
+	default:
+		return "", fmt.Errorf("unsupported: %q; %s", mode, ErrGenerateConfigArg)
+	}
+
+	generated := generateKeyBindSection(keyBind)
+	if !strings.Contains(configTemplate, keybindTag) {
+		return "", fmt.Errorf("template tag %q not found", keybindTag)
+	}
+
+	return strings.Replace(configTemplate, keybindTag, generated, 1), nil
+}
+
+func generateKeyBindSection(keyBind oviewer.KeyBind) string {
+	keys := make([]string, 0, len(keyBind))
+	for k := range keyBind {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
+	var sb strings.Builder
+	sb.WriteString("KeyBind:\n")
+	for _, action := range keys {
+		vals := keyBind[action]
+		fmt.Fprintf(&sb, "    %s:\n", action)
+		for _, v := range vals {
+			fmt.Fprintf(&sb, "        - %q\n", v)
+		}
+	}
+	return sb.String()
+}
+
+// HelpKey displays key bindings and exits.
+func HelpKey(cmd *cobra.Command, _ []string) {
+	fmt.Println(cmd.Short)
+	keyBind := oviewer.GetKeyBinds(config)
+	fmt.Println(oviewer.KeyBindString(keyBind))
+	fmt.Print(oviewer.DuplicateKeyBind(keyBind))
+}
+
+// ListViewMode displays the list of view modes.
+func ListViewMode() {
+	listView := oviewer.ListViewMode(config)
+	for _, v := range listView {
+		fmt.Println(v)
+	}
+}
+
+// Completion is shell completion.
+func Completion(cmd *cobra.Command, arg string) error {
+	switch arg {
+	case "bash":
+		return cmd.Root().GenBashCompletion(os.Stdout)
+	case "zsh":
+		return cmd.Root().GenZshCompletion(os.Stdout)
+	case "fish":
+		return cmd.Root().GenFishCompletion(os.Stdout, true)
+	case "powershell":
+		return cmd.Root().GenPowerShellCompletion(os.Stdout)
+	}
+
+	return ErrCompletion
+}
+
+// argsToFiles returns the file name from the argument.
+func argsToFiles(args []string) []string {
+	files := make([]string, 0, len(args))
+	for _, arg := range args {
+		argFiles, err := filepath.Glob(arg)
+		if err != nil {
+			continue
+		}
+		if len(argFiles) > 0 {
+			files = append(files, argFiles...)
+			continue
+		}
+		// fallback to the original argument.
+		files = append(files, arg)
+	}
+	// If filePath.Glob does not match,
+	// return argument to return correct error
+	if len(files) == 0 {
+		return args
+	}
+	return files
+}
+
+// RunOviewer displays the argument file.
+func RunOviewer(args []string) error {
+	files := argsToFiles(args)
+	ov, err := oviewer.Open(files...)
+	if err != nil {
+		return err
+	}
+
+	ov.SetConfig(config)
+
+	if pattern != "" {
+		ov.Search(pattern)
+	}
+	if filter != "" {
+		ov.Filter(filter, false)
+	}
+	if nonMatchFilter != "" {
+		ov.Filter(nonMatchFilter, true)
+	}
+	if markByPattern != "" {
+		ov.MarkByPattern(markByPattern)
+	}
+
+	if ov.Config.QuitSmall && (filter != "" || nonMatchFilter != "") {
+		ov.Config.QuitSmallFilter = true
+	}
+	// Run oviewer.
+	if err := ov.Run(); err != nil {
+		return err
+	}
+
+	ov.OutputOnExit()
+	return nil
+}
+
+// ExecCommand targets the output of command execution (stdout/stderr).
+func ExecCommand(args []string) error {
+	if len(args) == 0 {
+		return ErrNoArgument
+	}
+	cmd := oviewer.NewCommand(args...)
+	ov, err := cmd.Exec()
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		cmd.Wait()
+	}()
+
+	ov.SetConfig(config)
+
+	if err := ov.Run(); err != nil {
+		return err
+	}
+
+	ov.OutputOnExit()
+
+	return nil
+}
+
+// SetRedirect saves stdout and stderr during execution.
+func SetRedirect() {
+	// Suppress the output of os.Stdout and os.Stderr
+	// because the screen collapses.
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		tmpStdout := os.Stdout
+		os.Stdout = nil
+		defer func() {
+			os.Stdout = tmpStdout
+		}()
+	} else {
+		oviewer.STDOUTPIPE = os.Stdout
+	}
+
+	if term.IsTerminal(int(os.Stderr.Fd())) {
+		tmpStderr := os.Stderr
+		os.Stderr = nil
+		defer func() {
+			os.Stderr = tmpStderr
+		}()
+	} else {
+		oviewer.STDERRPIPE = os.Stderr
+	}
+}
+
+// flagUsage returns the usage of the flags.
+func flagUsage(f *pflag.FlagSet) string {
+	buf := new(bytes.Buffer)
+
+	lines := make([]string, 0)
+
+	lines = append(lines, "Short   Long\x00Purpose")
+
+	maxlen := 0
+	f.VisitAll(func(flag *pflag.Flag) {
+		if flag.Hidden {
+			return
+		}
+
+		line := ""
+		if flag.Shorthand != "" && flag.ShorthandDeprecated == "" {
+			line = fmt.Sprintf("  -%s, --%s", flag.Shorthand, flag.Name)
+		} else {
+			line = fmt.Sprintf("      --%s", flag.Name)
+		}
+
+		varname, usage := pflag.UnquoteUsage(flag)
+		if varname != "" {
+			line += " " + varname
+		}
+
+		switch flag.Value.Type() {
+		case "string":
+		case "bool":
+			if flag.DefValue == "true" {
+				line += "[=true|false]"
+			}
+		case "count":
+		default:
+		}
+
+		// This special character will be replaced with spacing once the
+		// correct alignment is calculated
+		line += "\x00"
+		if len(line) > maxlen {
+			maxlen = len(line)
+		}
+
+		line += usage
+
+		switch flag.Value.Type() {
+		case "int", "int8", "int16", "int32", "int64":
+			if flag.DefValue != "0" {
+				line += fmt.Sprintf(" (default %s)", flag.DefValue)
+			}
+		case "string":
+			if flag.DefValue != "" {
+				line += fmt.Sprintf(" (default %q)", flag.DefValue)
+			}
+		case "bool":
+			if flag.DefValue == "true" {
+				line += " (default true)"
+			}
+		case "count":
+		default:
+		}
+		if len(flag.Deprecated) != 0 {
+			line += fmt.Sprintf(" (DEPRECATED: %s)", flag.Deprecated)
+		}
+
+		lines = append(lines, line)
+	})
+
+	for _, line := range lines {
+		sidx := strings.Index(line, "\x00")
+		spacing := strings.Repeat(" ", maxlen-sidx)
+		fmt.Fprintln(buf, line[:sidx], spacing, line[sidx+1:])
+	}
+
+	return buf.String()
+}
+
+func openFile(fileName string) (*os.File, error) {
+	if fileName == "" {
+		fd := os.Stdin.Fd()
+		if term.IsTerminal(int(fd)) {
+			return nil, ErrMissingFile
+		}
+		return os.Stdin, nil
+	}
+	return os.Open(fileName)
+}
+
+// copyOutput outputs the content of the specified file or standard input.
+func copyOutput(args []string) error {
+	files := argsToFiles(args)
+	fileName := ""
+	if len(files) > 0 {
+		fileName = files[0]
+	}
+	file, err := openFile(fileName)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	r := io.Reader(file)
+	_, err = io.Copy(oviewer.STDOUTPIPE, r)
+	return err
+}
+
+// UsageFunc returns a function that returns the usage.
+// This is for overwriting cobra usage.
+func UsageFunc() (cmd func(*cobra.Command) error) {
+	return func(c *cobra.Command) error {
+		fmt.Fprintf(os.Stdout, "Usage:\n")
+		fmt.Fprintf(os.Stdout, "  %s [flags] [FILE]...\n", c.CommandPath())
+		fmt.Fprintf(os.Stdout, "\n")
+		fmt.Fprintf(os.Stdout, "Flags:\n")
+		fmt.Print(flagUsage(c.Flags()))
+		return nil
+	}
+}
+
+func init() {
+	config = oviewer.NewConfig()
+	cobra.OnInitialize(initConfig)
+	rootCmd.SetUsageFunc(UsageFunc())
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config `file` (default is $XDG_CONFIG_HOME/ov/config.yaml)")
+	_ = rootCmd.RegisterFlagCompletionFunc("config", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"yaml"}, cobra.ShellCompDirectiveFilterFileExt
+	})
+	rootCmd.PersistentFlags().BoolVarP(&ver, "version", "v", false, "display version information")
+	rootCmd.PersistentFlags().BoolVarP(&helpKey, "help-key", "", false, "list all key bindings")
+	rootCmd.PersistentFlags().BoolVarP(&listViewMode, "list-view-modes", "", false, "list available view modes defined in the configuration file")
+
+	rootCmd.PersistentFlags().BoolVarP(&execCommand, "exec", "e", false, "run command and display its output; use '--' to separate ov flags from command arguments (e.g., 'ov --exec -- ls -l')")
+
+	rootCmd.PersistentFlags().BoolVarP(&forceScreen, "force-screen", "", false, "display screen even when redirecting output")
+
+	rootCmd.PersistentFlags().StringVarP(&completion, "completion", "", "", "generate completion script [bash|zsh|fish|powershell]")
+	_ = rootCmd.RegisterFlagCompletionFunc("completion", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"bash", "zsh", "fish", "powershell"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	rootCmd.PersistentFlags().StringVar(&generateConfig, "generate-config", "", "print a sample config file to stdout [default|less]")
+	rootCmd.PersistentFlags().Lookup("generate-config").NoOptDefVal = "default"
+	_ = rootCmd.RegisterFlagCompletionFunc("generate-config", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"default", "less"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.PersistentFlags().StringVarP(&pattern, "pattern", "", "", "initial search pattern applied on startup")
+	rootCmd.PersistentFlags().StringVarP(&filter, "filter", "", "", "show only lines matching this pattern")
+	rootCmd.PersistentFlags().StringVarP(&nonMatchFilter, "non-match-filter", "", "", "hide lines matching this pattern")
+	rootCmd.PersistentFlags().StringVarP(&markByPattern, "mark-by-pattern", "", "", "mark lines matching this pattern")
+	rootCmd.PersistentFlags().BoolVarP(&oviewer.SkipExtract, "skip-extract", "", false, "read compressed files as raw bytes without decompressing")
+
+	// Config.General
+	rootCmd.PersistentFlags().StringP("converter", "", "es", "content processing mode [es|raw|align|wordwrap]")
+	_ = viper.BindPFlag("general.Converter", rootCmd.PersistentFlags().Lookup("converter"))
+	_ = rootCmd.RegisterFlagCompletionFunc("converter", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"es\tEscape Sequence", "raw\tRaw output of escape sequences", "align\tAlign Column Widths", "wordwrap\tWord Wrap"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.PersistentFlags().BoolP("align", "l", false, "align the output columns for better readability")
+	_ = viper.BindPFlag("general.Align", rootCmd.PersistentFlags().Lookup("align"))
+	rootCmd.PersistentFlags().BoolP("raw", "r", false, "show escape sequences as literal text")
+	_ = viper.BindPFlag("general.Raw", rootCmd.PersistentFlags().Lookup("raw"))
+
+	rootCmd.PersistentFlags().IntP("tab-width", "x", 8, "tab stop width")
+	_ = viper.BindPFlag("general.TabWidth", rootCmd.PersistentFlags().Lookup("tab-width"))
+	_ = rootCmd.RegisterFlagCompletionFunc("tab-width", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"3\ttab width", "2\ttab width", "4\ttab width", "8\ttab width"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.PersistentFlags().IntP("header", "H", 0, "number of lines to pin as a fixed header")
+	_ = viper.BindPFlag("general.Header", rootCmd.PersistentFlags().Lookup("header"))
+	_ = rootCmd.RegisterFlagCompletionFunc("header", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"1"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.PersistentFlags().IntP("vertical-header", "y", 0, "number of characters to display as a vertical header")
+	_ = viper.BindPFlag("general.VerticalHeader", rootCmd.PersistentFlags().Lookup("vertical-header"))
+	_ = rootCmd.RegisterFlagCompletionFunc("vertical-header", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"1"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	rootCmd.PersistentFlags().IntP("header-column", "Y", 0, "number of columns to display as a vertical header")
+	_ = viper.BindPFlag("general.HeaderColumn", rootCmd.PersistentFlags().Lookup("header-column"))
+	_ = rootCmd.RegisterFlagCompletionFunc("header-column", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"1"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	rootCmd.MarkFlagsMutuallyExclusive("vertical-header", "header-column")
+
+	rootCmd.PersistentFlags().IntP("skip-lines", "", 0, "number of lines to skip at the top of each file")
+	_ = viper.BindPFlag("general.SkipLines", rootCmd.PersistentFlags().Lookup("skip-lines"))
+	_ = rootCmd.RegisterFlagCompletionFunc("skip-lines", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"1"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.PersistentFlags().BoolP("alternate-rows", "C", false, "highlight even and odd rows in alternating colors")
+	_ = viper.BindPFlag("general.AlternateRows", rootCmd.PersistentFlags().Lookup("alternate-rows"))
+
+	rootCmd.PersistentFlags().BoolP("column-mode", "c", false, "split content into columns at the delimiter")
+	_ = viper.BindPFlag("general.ColumnMode", rootCmd.PersistentFlags().Lookup("column-mode"))
+
+	rootCmd.PersistentFlags().BoolP("column-width", "", false, "column mode using fixed-width fields instead of a delimiter")
+	_ = viper.BindPFlag("general.ColumnWidth", rootCmd.PersistentFlags().Lookup("column-width"))
+
+	rootCmd.PersistentFlags().BoolP("column-rainbow", "", false, "colorize each column with a distinct color")
+	_ = viper.BindPFlag("general.ColumnRainbow", rootCmd.PersistentFlags().Lookup("column-rainbow"))
+
+	rootCmd.PersistentFlags().BoolP("line-number", "n", false, "show line numbers")
+	_ = viper.BindPFlag("general.LineNumMode", rootCmd.PersistentFlags().Lookup("line-number"))
+
+	rootCmd.PersistentFlags().StringP("wrap", "w", "", "wrap long lines [char|word]")
+	rootCmd.PersistentFlags().Lookup("wrap").NoOptDefVal = "char"
+	_ = viper.BindPFlag("general.Wrap", rootCmd.PersistentFlags().Lookup("wrap"))
+	_ = rootCmd.RegisterFlagCompletionFunc("wrap", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"char\tWrap by character", "word\tWrap at word boundaries"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	rootCmd.PersistentFlags().String("break-indent", "0", "indent width for wrapped lines")
+	_ = viper.BindPFlag("general.BreakIndent", rootCmd.PersistentFlags().Lookup("break-indent"))
+	rootCmd.PersistentFlags().Int("sign-mode", 0, "display markers as a bitmask: 1=break, 2=continue, 4=trunc")
+	_ = viper.BindPFlag("general.SignMode", rootCmd.PersistentFlags().Lookup("sign-mode"))
+
+	rootCmd.PersistentFlags().BoolP("plain", "p", false, "strip ANSI colors and styles from the content")
+	_ = viper.BindPFlag("general.PlainMode", rootCmd.PersistentFlags().Lookup("plain"))
+
+	rootCmd.PersistentFlags().StringP("column-delimiter", "d", ",", "column delimiter `character`")
+	_ = viper.BindPFlag("general.ColumnDelimiter", rootCmd.PersistentFlags().Lookup("column-delimiter"))
+	_ = rootCmd.RegisterFlagCompletionFunc("column-delimiter", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{",\tcomma", "|\tvertical line", "\\\\t\ttab", "│\tbox"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.PersistentFlags().StringP("section-delimiter", "", "", "`regexp` marking section boundaries (e.g., \"^#\")")
+	_ = viper.BindPFlag("general.SectionDelimiter", rootCmd.PersistentFlags().Lookup("section-delimiter"))
+
+	rootCmd.PersistentFlags().IntP("section-start", "", 0, "line offset from the section delimiter where content begins")
+	_ = viper.BindPFlag("general.SectionStartPosition", rootCmd.PersistentFlags().Lookup("section-start"))
+
+	rootCmd.PersistentFlags().BoolP("section-header", "", false, "pin the section delimiter line as a fixed header")
+	_ = viper.BindPFlag("general.SectionHeader", rootCmd.PersistentFlags().Lookup("section-header"))
+
+	rootCmd.PersistentFlags().IntP("section-header-num", "", 1, "number of section header lines")
+	_ = viper.BindPFlag("general.SectionHeaderNum", rootCmd.PersistentFlags().Lookup("section-header-num"))
+
+	rootCmd.PersistentFlags().BoolP("follow-mode", "f", false, "monitor file and display new content as it is written")
+	_ = viper.BindPFlag("general.FollowMode", rootCmd.PersistentFlags().Lookup("follow-mode"))
+
+	rootCmd.PersistentFlags().BoolP("follow-all", "A", false, "follow multiple files and show the most recently updated one")
+	_ = viper.BindPFlag("general.FollowAll", rootCmd.PersistentFlags().Lookup("follow-all"))
+
+	rootCmd.PersistentFlags().BoolP("follow-section", "", false, "follow mode: jump to the most recently updated section")
+	_ = viper.BindPFlag("general.FollowSection", rootCmd.PersistentFlags().Lookup("follow-section"))
+
+	rootCmd.PersistentFlags().BoolP("follow-name", "", false, "follow by file name mode; survives log rotation")
+	_ = viper.BindPFlag("general.FollowName", rootCmd.PersistentFlags().Lookup("follow-name"))
+
+	rootCmd.PersistentFlags().IntP("watch", "T", 0, "re-read and refresh the view every N `seconds`")
+	_ = viper.BindPFlag("general.WatchInterval", rootCmd.PersistentFlags().Lookup("watch"))
+
+	rootCmd.PersistentFlags().StringSliceP("multi-color", "M", nil, "highlight words or patterns in distinct colors (e.g., \"ERROR,WARNING\")")
+	_ = viper.BindPFlag("general.MultiColorWords", rootCmd.PersistentFlags().Lookup("multi-color"))
+
+	rootCmd.PersistentFlags().StringP("jump-target", "j", "", "jump target `[int|int%|.int|'section']`")
+	_ = viper.BindPFlag("general.JumpTarget", rootCmd.PersistentFlags().Lookup("jump-target"))
+
+	rootCmd.PersistentFlags().StringP("hscroll-width", "", "10%", "width to scroll horizontally `[int|int%|.int]`")
+	_ = viper.BindPFlag("general.HScrollWidth", rootCmd.PersistentFlags().Lookup("hscroll-width"))
+
+	rootCmd.PersistentFlags().StringP("caption", "", "", "override the status line file name with a custom label")
+	_ = viper.BindPFlag("general.Caption", rootCmd.PersistentFlags().Lookup("caption"))
+
+	rootCmd.PersistentFlags().BoolP("hide-other-section", "", false, "hide all sections except the current one")
+	_ = viper.BindPFlag("general.HideOtherSection", rootCmd.PersistentFlags().Lookup("hide-other-section"))
+
+	rootCmd.PersistentFlags().BoolP("status-line", "", true, "show the status line at the bottom")
+	_ = viper.BindPFlag("general.StatusLine", rootCmd.PersistentFlags().Lookup("status-line"))
+
+	rootCmd.PersistentFlags().IntP("ruler", "", 0, "display ruler (=0: none, =1: relative, =2: absolute)")
+	_ = viper.BindPFlag("general.RulerType", rootCmd.PersistentFlags().Lookup("ruler"))
+	rootCmd.PersistentFlags().Lookup("ruler").NoOptDefVal = "1"
+	_ = rootCmd.RegisterFlagCompletionFunc("ruler", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"1\trelative", "2\tabsolute", "0\tnone"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.PersistentFlags().IntP("notify-eof", "", 0, "notify at the end of the file")
+	_ = viper.BindPFlag("NotifyEOF", rootCmd.PersistentFlags().Lookup("notify-eof"))
+	rootCmd.PersistentFlags().Lookup("notify-eof").NoOptDefVal = "1"
+
+	// Config
+	rootCmd.PersistentFlags().BoolP("quit-if-one-screen", "F", false, "quit if the output fits on one screen")
+	_ = viper.BindPFlag("QuitSmall", rootCmd.PersistentFlags().Lookup("quit-if-one-screen"))
+
+	rootCmd.PersistentFlags().BoolP("exit-write", "X", false, "output the current screen when exiting")
+	_ = viper.BindPFlag("IsWriteOnExit", rootCmd.PersistentFlags().Lookup("exit-write"))
+
+	rootCmd.PersistentFlags().IntP("exit-write-before", "b", 0, "extra lines above the current view to output on exit")
+	_ = viper.BindPFlag("BeforeWriteOriginal", rootCmd.PersistentFlags().Lookup("exit-write-before"))
+
+	rootCmd.PersistentFlags().IntP("exit-write-after", "a", 0, "extra lines below the current view to output on exit")
+	_ = viper.BindPFlag("AfterWriteOriginal", rootCmd.PersistentFlags().Lookup("exit-write-after"))
+
+	rootCmd.PersistentFlags().BoolP("case-sensitive", "i", false, "case-sensitive in search")
+	_ = viper.BindPFlag("CaseSensitive", rootCmd.PersistentFlags().Lookup("case-sensitive"))
+
+	rootCmd.PersistentFlags().BoolP("smart-case-sensitive", "", false, "case-insensitive unless the pattern contains uppercase letters")
+	_ = viper.BindPFlag("SmartCaseSensitive", rootCmd.PersistentFlags().Lookup("smart-case-sensitive"))
+
+	rootCmd.PersistentFlags().BoolP("regexp-search", "", false, "treat search patterns as regular expressions")
+	_ = viper.BindPFlag("RegexpSearch", rootCmd.PersistentFlags().Lookup("regexp-search"))
+
+	rootCmd.PersistentFlags().BoolP("incsearch", "", true, "incremental search")
+	_ = viper.BindPFlag("Incsearch", rootCmd.PersistentFlags().Lookup("incsearch"))
+
+	rootCmd.PersistentFlags().IntP("memory-limit", "", -1, "maximum chunks to keep in memory (-1 for unlimited)")
+	_ = viper.BindPFlag("MemoryLimit", rootCmd.PersistentFlags().Lookup("memory-limit"))
+
+	rootCmd.PersistentFlags().IntP("memory-limit-file", "", 100, "maximum chunks to keep in memory per file")
+	_ = viper.BindPFlag("MemoryLimitFile", rootCmd.PersistentFlags().Lookup("memory-limit-file"))
+
+	rootCmd.PersistentFlags().BoolP("disable-mouse", "", false, "disable mouse support")
+	_ = viper.BindPFlag("DisableMouse", rootCmd.PersistentFlags().Lookup("disable-mouse"))
+
+	rootCmd.PersistentFlags().BoolP("disable-column-cycle", "", false, "keep column cursor from wrapping to the first column")
+	_ = viper.BindPFlag("DisableColumnCycle", rootCmd.PersistentFlags().Lookup("disable-column-cycle"))
+
+	rootCmd.PersistentFlags().StringP("view-mode", "m", "", "apply predefined settings for a specific mode")
+	_ = viper.BindPFlag("ViewMode", rootCmd.PersistentFlags().Lookup("view-mode"))
+
+	rootCmd.PersistentFlags().StringP("sidebar-mode", "", "", "open sidebar with this content [help|marks|documents|sections|styles]")
+	_ = viper.BindPFlag("SidebarMode", rootCmd.PersistentFlags().Lookup("sidebar-mode"))
+	_ = rootCmd.RegisterFlagCompletionFunc("sidebar-mode", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"help", "marks", "documents", "sections", "styles"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.PersistentFlags().BoolP("set-terminal-title", "", false, "update the terminal title bar with the current file name")
+	_ = viper.BindPFlag("SetTerminalTitle", rootCmd.PersistentFlags().Lookup("set-terminal-title"))
+
+	rootCmd.PersistentFlags().BoolP("debug", "", false, "debug mode")
+	_ = viper.BindPFlag("Debug", rootCmd.PersistentFlags().Lookup("debug"))
+}
+
+// initConfig reads in config file and ENV variables if set.
+func initConfig() {
+	if generateConfig != "" {
+		return
+	}
+
+	if cfgFile != "" {
+		// Use config file from the flag.
+		viper.SetConfigFile(cfgFile)
+	} else {
+		// Get home directory.
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+
+		// Get XDG config directory.
+		xdgConfigHome := os.Getenv("XDG_CONFIG_HOME")
+
+		var defaultConfigPath string
+
+		if xdgConfigHome != "" {
+			// If set, use it for the default configuration path.
+			defaultConfigPath = filepath.Join(xdgConfigHome, "ov")
+		} else {
+			// If not set, use the default `$HOME/.config/ov`.
+			defaultConfigPath = filepath.Join(home, ".config", "ov")
+		}
+
+		// Set the default configuration path and file name.
+		viper.AddConfigPath(defaultConfigPath)
+		viper.SetConfigName("config")
+
+		// If the default config file does not exist but the legacy config file does exist,
+		// then fallback to the legacy config path and file name.
+		if !fileExists(filepath.Join(defaultConfigPath, "config.yaml")) &&
+			fileExists(filepath.Join(home, ".ov.yaml")) {
+			viper.AddConfigPath(home)
+			viper.SetConfigName(".ov")
+		}
+	}
+
+	viper.SetEnvPrefix("ov")
+	viper.AutomaticEnv() // read in environment variables that match
+
+	// If a config file is found, read it in.
+	if err := viper.ReadInConfig(); err != nil {
+		var configNotFoundError viper.ConfigFileNotFoundError
+		if !errors.As(err, &configNotFoundError) || viper.GetBool("debug") {
+			fmt.Fprintln(os.Stderr, "failed to read config file:", err)
+			// If the config file is not found, it is not an error and will continue.
+		}
+	}
+
+	if err := viper.Unmarshal(&config); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+}
+
+// fileExists returns true if the file exists.
+func fileExists(path string) bool {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	return true
+}
+
+func main() {
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
+}

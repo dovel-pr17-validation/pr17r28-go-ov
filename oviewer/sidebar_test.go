@@ -1,0 +1,535 @@
+package oviewer
+
+import (
+	"bytes"
+	"io"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/gdamore/tcell/v3"
+)
+
+func TestRoot_prepareSidebarItems(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+
+	tests := []struct {
+		name         string
+		sidebarMode  SidebarMode
+		sidebarWidth int
+		setup        func(root *Root)
+		wantItems    func(root *Root) []SidebarItem
+	}{
+		{
+			name:         "sidebarWidth zero does nothing",
+			sidebarMode:  SidebarModeMarks,
+			sidebarWidth: 0,
+			setup:        func(root *Root) {},
+			wantItems:    func(root *Root) []SidebarItem { return nil },
+		},
+		{
+			name:         "SidebarModeMark sets SidebarItems",
+			sidebarMode:  SidebarModeMarks,
+			sidebarWidth: 20,
+			setup: func(root *Root) {
+				root.Doc.marked = []MatchedLine{
+					{lineNum: 0, line: []byte("First")},
+					{lineNum: 1, line: []byte("Second")},
+				}
+				root.Doc.markedPoint = 0
+			},
+			wantItems: func(root *Root) []SidebarItem {
+				return []SidebarItem{
+					{Contents: StrToContents("0 First         ", 0), IsCurrent: true},
+					{Contents: StrToContents("1 Second        ", 0), IsCurrent: false},
+				}
+			},
+		},
+		{
+			name:         "SidebarModeDocList sets SidebarItems",
+			sidebarMode:  SidebarModeDocList,
+			sidebarWidth: 20,
+			setup: func(root *Root) {
+				root.DocList = []*Document{
+					{FileName: "file1.txt"},
+					{FileName: "file2.txt"},
+				}
+				root.CurrentDoc = 1
+			},
+			wantItems: func(root *Root) []SidebarItem {
+				length := 15
+				displayName1 := StrToContents("file1.txt", 0)
+				displayName2 := StrToContents("file2.txt", 0)
+				if len(displayName1) < length {
+					displayName1 = append(displayName1, StrToContents(strings.Repeat(" ", length-len(displayName1)), 0)...)
+				}
+				if len(displayName2) < length {
+					displayName2 = append(displayName2, StrToContents(strings.Repeat(" ", length-len(displayName2)), 0)...)
+				}
+				return []SidebarItem{
+					{Contents: displayName1, IsCurrent: false},
+					{Contents: displayName2, IsCurrent: true},
+				}
+			},
+		},
+		{
+			name:         "SidebarModeHelp sets SidebarItems",
+			sidebarMode:  SidebarModeHelp,
+			sidebarWidth: 20,
+			setup:        func(root *Root) {},
+			wantItems: func(root *Root) []SidebarItem {
+				return []SidebarItem{
+					{Contents: StrToContents("[Escape, q]", 0), IsCurrent: false},
+					{Contents: StrToContents("  quit", 0), IsCurrent: false},
+					{Contents: StrToContents("[ctrl+c]", 0), IsCurrent: false},
+					{Contents: StrToContents("  cancel", 0), IsCurrent: false},
+					{Contents: StrToContents("[Q]", 0), IsCurrent: false},
+					{Contents: StrToContents("  output screen and quit", 0), IsCurrent: false},
+					{Contents: StrToContents("[ctrl+q]", 0), IsCurrent: false},
+					{Contents: StrToContents("  set before/after range for output and quit", 0), IsCurrent: false},
+					{Contents: StrToContents("[alt+shift+F8]", 0), IsCurrent: false},
+					{Contents: StrToContents("  toggle writing original content (instead of current screen) on exit", 0), IsCurrent: false},
+				}
+			},
+		},
+		{
+			name:         "SidebarModeStyles sets SidebarItems",
+			sidebarMode:  SidebarModeStyles,
+			sidebarWidth: 20,
+			setup: func(root *Root) {
+				style := tcell.StyleDefault.Bold(true)
+				root.Doc.styles.Set(style, true)
+			},
+			wantItems: func(root *Root) []SidebarItem {
+				style := tcell.StyleDefault.Bold(true)
+				length := 20 - 4
+				var items []SidebarItem
+				for _, h := range []string{
+					"o: disable all, then enable (e.g., o1)",
+					"a: enable all (e.g., a1-2)",
+					"i: invert all (e.g., i1,3)",
+				} {
+					c := StrToContents(h, 0)
+					if len(c) < length {
+						c = append(c, StrToContents(strings.Repeat(" ", length-len(c)), 0)...)
+					}
+					for j := range c {
+						c[j].style = helpStyle
+					}
+					items = append(items, SidebarItem{Contents: c})
+				}
+				c := StrToContents("[*] "+styleString(style), 0)
+				for j := 4; j < len(c); j++ {
+					c[j].style = style
+				}
+				if len(c) < length {
+					c = append(c, StrToContents(strings.Repeat(" ", length-len(c)), 0)...)
+				}
+				return append(items, SidebarItem{Contents: c})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, err := NewRoot(bytes.NewBufferString("First\nSecond\nThird"))
+			if err != nil {
+				t.Fatalf("could not construct receiver type: %v", err)
+			}
+			root.sidebarMode = tt.sidebarMode
+			root.sidebarWidth = tt.sidebarWidth
+			tt.setup(root)
+			root.scr.vHeight = 10 // arbitrary value for testing
+			root.prepareSidebarItems()
+			want := tt.wantItems(root)
+			got := root.SidebarItems
+			if len(got) != len(want) {
+				t.Errorf("SidebarItems length = %d, want %d", len(got), len(want))
+			}
+			for i := range got {
+				if !reflect.DeepEqual(got[i].Contents, want[i].Contents) {
+					t.Errorf("SidebarItems[%d].Contents = %q, want %q", i, got[i].Contents.String(), want[i].Contents.String())
+				}
+				if got[i].IsCurrent != want[i].IsCurrent {
+					t.Errorf("SidebarItems[%d].IsCurrent = %v, want %v", i, got[i].IsCurrent, want[i].IsCurrent)
+				}
+			}
+		})
+	}
+}
+
+func TestRoot_sidebarItemsForMark(t *testing.T) {
+	tests := []struct {
+		name string // description of this test case
+		// Named input parameters for receiver constructor.
+		r     io.Reader
+		marks []int
+		want  []SidebarItem
+	}{
+		{
+			name:  "marks1",
+			r:     bytes.NewBufferString("Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15\nLine 16\nLine 17\nLine 18\nLine 19\nLine 20"),
+			marks: []int{0, 1},
+			want: []SidebarItem{
+				{Contents: StrToContents("0 Line 1        ", 0), IsCurrent: true},
+				{Contents: StrToContents("1 Line 2        ", 0), IsCurrent: false},
+			},
+		},
+		{
+			name:  "single mark at start",
+			r:     bytes.NewBufferString("First\nSecond\nThird"),
+			marks: []int{0},
+			want: []SidebarItem{
+				{Contents: StrToContents("0 First         ", 0), IsCurrent: true},
+			},
+		},
+		{
+			name:  "single mark at end",
+			r:     bytes.NewBufferString("Alpha\nBeta\nGamma"),
+			marks: []int{2},
+			want: []SidebarItem{
+				{Contents: StrToContents("2 Gamma         ", 0), IsCurrent: true},
+			},
+		},
+		{
+			name:  "multiple marks, current is last",
+			r:     bytes.NewBufferString("A\nB\nC\nD"),
+			marks: []int{1, 2, 3},
+			want: []SidebarItem{
+				{Contents: StrToContents("1 B             ", 0), IsCurrent: true},
+				{Contents: StrToContents("2 C             ", 0), IsCurrent: false},
+				{Contents: StrToContents("3 D             ", 0), IsCurrent: false},
+			},
+		},
+		{
+			name:  "long line truncated",
+			r:     bytes.NewBufferString("Short\nThis is a very long line that should be truncated"),
+			marks: []int{1},
+			want: []SidebarItem{
+				{Contents: StrToContents("1 This is a very long line that should be truncated", 0), IsCurrent: true},
+			},
+		},
+		{
+			name:  "no marks",
+			r:     bytes.NewBufferString("One\nTwo\nThree"),
+			marks: []int{},
+			want:  []SidebarItem{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tcellNewScreen = fakeScreen
+			defer func() {
+				tcellNewScreen = tcell.NewScreen
+			}()
+			root, err := NewRoot(tt.r)
+			if err != nil {
+				t.Fatalf("could not construct receiver type: %v", err)
+			}
+			root.Doc.WaitEOF()
+			root.scr.vHeight = 20 // arbitrary value for testing
+			root.sidebarWidth = 20
+			root.sidebarMode = SidebarModeMarks
+			for _, c := range tt.marks {
+				root.Doc.topLN = c
+				line, err := root.Doc.Line(c)
+				if err != nil {
+					t.Fatalf("could not get line %d: %v", c, err)
+				}
+				root.Doc.marked = append(root.Doc.marked, MatchedLine{lineNum: c, line: line})
+			}
+			got := root.sidebarItemsForMarks()
+			if len(got) != len(tt.want) {
+				t.Errorf("sidebarItemsForMark() length = %d, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if !reflect.DeepEqual(got[i].Contents, tt.want[i].Contents) {
+					t.Errorf("  got[%d]: %#v\n want[%d]: %#v", i, got[i].Contents.String(), i, tt.want[i].Contents.String())
+				}
+				if got[i].IsCurrent != tt.want[i].IsCurrent {
+					t.Errorf("  got[%d].IsCurrent: %#v\n want[%d].IsCurrent: %#v", i, got[i].IsCurrent, i, tt.want[i].IsCurrent)
+				}
+			}
+		})
+	}
+}
+
+func TestRoot_sidebarItemsForHelp(t *testing.T) {
+	tests := []struct {
+		name string
+	}{
+		{
+			name: "basic help items",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootHelper(t)
+			root.scr.vHeight = 20
+			root.sidebarWidth = 20
+			root.sidebarMode = SidebarModeHelp
+			if len(root.sidebarItemsForHelp()) == 0 {
+				t.Errorf("sidebarItemsForHelp() returned no items")
+			}
+		})
+	}
+}
+
+func TestRoot_sidebarItemsForStyles_NoANSIStyles(t *testing.T) {
+	root := rootHelper(t)
+	root.scr.vHeight = 20
+	root.sidebarWidth = 30
+	root.sidebarMode = SidebarModeStyles
+
+	items := root.sidebarItemsForStyles()
+	if len(items) != 1 {
+		t.Fatalf("sidebarItemsForStyles() items = %d, want %d", len(items), 1)
+	}
+
+	want := []string{
+		"No ANSI escape sequences found.",
+	}
+	for i, item := range items {
+		got := strings.TrimRight(item.Contents.String(), " ")
+		if got != want[i] {
+			t.Errorf("sidebarItemsForStyles()[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
+func TestRoot_sidebarItemsForSections(t *testing.T) {
+	tests := []struct {
+		name     string
+		r        io.Reader
+		sections []struct {
+			lineNum int
+			line    []byte
+		}
+		topLN    int
+		want     []SidebarItem
+		wantCurr int
+	}{
+		{
+			name: "no sections",
+			r:    bytes.NewBufferString("Line 1\nLine 2\nLine 3"),
+			sections: []struct {
+				lineNum int
+				line    []byte
+			}{},
+			topLN:    0,
+			want:     []SidebarItem{},
+			wantCurr: -1,
+		},
+		{
+			name: "single section at start",
+			r:    bytes.NewBufferString("Section1\nLine 2\nLine 3"),
+			sections: []struct {
+				lineNum int
+				line    []byte
+			}{
+				{lineNum: 0, line: []byte("Section1")},
+			},
+			topLN: 0,
+			want: []SidebarItem{
+				{Contents: StrToContents("0 Section1      ", 0), IsCurrent: true},
+			},
+			wantCurr: 0,
+		},
+		{
+			name: "multiple sections, current in middle",
+			r:    bytes.NewBufferString("Section1\nLine 2\nSection2\nLine 4\nSection3"),
+			sections: []struct {
+				lineNum int
+				line    []byte
+			}{
+				{lineNum: 0, line: []byte("Section1")},
+				{lineNum: 1, line: []byte("Section2")},
+				{lineNum: 2, line: []byte("Section3")},
+			},
+			topLN: 2,
+			want: []SidebarItem{
+				{Contents: StrToContents("0 Section1      ", 0), IsCurrent: false},
+				{Contents: StrToContents("1 Section2      ", 0), IsCurrent: false},
+				{Contents: StrToContents("2 Section3      ", 0), IsCurrent: true},
+			},
+			wantCurr: 1,
+		},
+		{
+			name: "section with long line",
+			r:    bytes.NewBufferString("This is a very long section header"),
+			sections: []struct {
+				lineNum int
+				line    []byte
+			}{
+				{lineNum: 0, line: []byte("This is a very long section header")},
+			},
+			topLN: 0,
+			want: []SidebarItem{
+				{Contents: StrToContents("0 This is a very long section header", 0), IsCurrent: true},
+			},
+			wantCurr: 0,
+		},
+		{
+			name: "section with leading whitespace",
+			r:    bytes.NewBufferString("  Section with indent"),
+			sections: []struct {
+				lineNum int
+				line    []byte
+			}{
+				{lineNum: 0, line: []byte("  Section with indent")},
+			},
+			topLN: 0,
+			want: []SidebarItem{
+				{Contents: StrToContents("0 Section with indent", 0), IsCurrent: true},
+			},
+			wantCurr: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tcellNewScreen = fakeScreen
+			defer func() {
+				tcellNewScreen = tcell.NewScreen
+			}()
+			root, err := NewRoot(tt.r)
+			if err != nil {
+				t.Fatalf("could not construct receiver type: %v", err)
+			}
+			root.mu.RLock()
+			for _, doc := range root.DocList {
+				doc.WaitEOF()
+			}
+			root.mu.RUnlock()
+			root.scr.vHeight = 20
+			root.sidebarWidth = 20
+			root.sidebarMode = SidebarModeSections
+			root.Doc.topLN = tt.topLN
+			for _, sec := range tt.sections {
+				root.Doc.sectionList = append(root.Doc.sectionList, MatchedLine{lineNum: sec.lineNum, line: sec.line})
+			}
+			got := root.sidebarItemsForSections()
+			if len(got) != len(tt.want) {
+				t.Errorf("sidebarItemsForSections() length = %d, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if !reflect.DeepEqual(got[i].Contents, tt.want[i].Contents) {
+					t.Errorf("got[%d].Contents = %q, want %q", i, got[i].Contents.String(), tt.want[i].Contents.String())
+				}
+				if got[i].IsCurrent != tt.want[i].IsCurrent {
+					t.Errorf("got[%d].IsCurrent = %v, want %v", i, got[i].IsCurrent, tt.want[i].IsCurrent)
+				}
+			}
+		})
+	}
+}
+
+func TestRoot_sidebarItemsForViewMode(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+
+	tests := []struct {
+		name  string
+		r     io.Reader
+		modes map[string]General
+		want  []SidebarItem
+	}{
+		{
+			name: "default view mode",
+			r:    bytes.NewBufferString("First\nSecond"),
+			want: []SidebarItem{
+				{Label: " 0 ", Contents: StrToContents("general         ", 0)},
+			},
+		},
+		{
+			name: "sorted custom view modes",
+			r:    bytes.NewBufferString("First\nSecond"),
+			modes: map[string]General{
+				"zebra": {},
+				"alpha": {},
+			},
+			want: []SidebarItem{
+				{Label: " 0 ", Contents: StrToContents("general         ", 0)},
+				{Label: " 1 ", Contents: StrToContents("alpha           ", 0)},
+				{Label: " 2 ", Contents: StrToContents("zebra           ", 0)},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, err := NewRoot(tt.r)
+			if err != nil {
+				t.Fatalf("could not construct receiver type: %v", err)
+			}
+			root.Config.Mode = tt.modes
+			root.sidebarWidth = 20
+			root.scr.vHeight = 20
+			got := root.sidebarItemsForViewMode()
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("sidebarItemsForViewMode() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_sidebarItemForStyle(t *testing.T) {
+	style := tcell.StyleDefault.Bold(true)
+	tests := []struct {
+		name    string
+		enabled bool
+		index   int
+		wantOK  bool
+	}{
+		{name: "enabled style", enabled: true, index: 0, wantOK: true},
+		{name: "disabled style", enabled: false, index: 0, wantOK: true},
+		{name: "invalid index", enabled: true, index: 1, wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootHelper(t)
+			root.Doc.styles.Set(style, tt.enabled)
+
+			got, ok := root.sidebarItemForStyle(tt.index, 20)
+			if ok != tt.wantOK {
+				t.Fatalf("sidebarItemForStyle() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				if !reflect.DeepEqual(got, SidebarItem{}) {
+					t.Errorf("sidebarItemForStyle() item = %#v, want zero value", got)
+				}
+				return
+			}
+
+			repr := "[ ] "
+			if tt.enabled {
+				repr = "[*] "
+			}
+			wantText := repr + styleString(style)
+			wantText += strings.Repeat(" ", max(20-len(wantText), 0))
+			if got.Label != " 0 " {
+				t.Errorf("sidebarItemForStyle() label = %q, want %q", got.Label, " 0 ")
+			}
+			if got.Contents.String() != wantText {
+				t.Errorf("sidebarItemForStyle() contents = %q, want %q", got.Contents.String(), wantText)
+			}
+			if got.IsCurrent {
+				t.Error("sidebarItemForStyle() IsCurrent = true, want false")
+			}
+
+			for i, content := range got.Contents {
+				wantStyle := tcell.StyleDefault
+				if i >= 4 && i < len(repr)+len(styleString(style)) {
+					wantStyle = style
+				}
+				if content.style != wantStyle {
+					t.Errorf("sidebarItemForStyle() contents[%d].style = %v, want %v", i, content.style, wantStyle)
+				}
+			}
+		})
+	}
+}

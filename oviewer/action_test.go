@@ -1,0 +1,2604 @@
+package oviewer
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/gdamore/tcell/v3"
+)
+
+func TestRoot_toggle(t *testing.T) {
+	root := rootHelper(t)
+	ctx := context.Background()
+	var v bool
+	v = root.Doc.ColumnMode
+	root.toggleColumnMode(ctx)
+	if v == root.Doc.ColumnMode {
+		t.Errorf("toggleColumnMode() = %v, want %v", root.Doc.ColumnMode, !v)
+	}
+	v = root.Doc.WrapMode
+	root.toggleWrapMode(ctx)
+	if v == root.Doc.WrapMode {
+		t.Errorf("toggleWrapMode() = %v, want %v", root.Doc.WrapMode, !v)
+	}
+	v = root.Doc.LineNumMode
+	root.toggleLineNumMode(ctx)
+	if v == root.Doc.LineNumMode {
+		t.Errorf("toggleLineNumberMode() = %v, want %v", root.Doc.LineNumMode, !v)
+	}
+	v = root.Doc.ColumnWidth
+	root.toggleColumnWidth(ctx)
+	if v == root.Doc.ColumnWidth {
+		t.Errorf("toggleColumnWidth() = %v, want %v", root.Doc.ColumnWidth, !v)
+	}
+	root.toggleColumnWidth(ctx)
+	if v != root.Doc.ColumnWidth {
+		t.Errorf("toggleColumnWidth() = %v, want %v", root.Doc.ColumnWidth, v)
+	}
+	v = root.Doc.AlternateRows
+	root.toggleAlternateRows(ctx)
+	if v == root.Doc.AlternateRows {
+		t.Errorf("toggleAlternateRows() = %v, want %v", root.Doc.AlternateRows, !v)
+	}
+	v = root.Doc.PlainMode
+	root.togglePlain(ctx)
+	if v == root.Doc.PlainMode {
+		t.Errorf("togglePlainMode() = %v, want %v", root.Doc.PlainMode, !v)
+	}
+	v = root.Doc.ColumnRainbow
+	root.toggleRainbow(ctx)
+	if v == root.Doc.ColumnRainbow {
+		t.Errorf("toggleRainbow() = %v, want %v", root.Doc.ColumnRainbow, !v)
+	}
+	v = root.Doc.FollowMode
+	root.toggleFollowMode(ctx)
+	if v == root.Doc.FollowMode {
+		t.Errorf("toggleFollow() = %v, want %v", root.Doc.FollowMode, !v)
+	}
+	v = root.FollowAll
+	root.toggleFollowAll(ctx)
+	if v == root.FollowAll {
+		t.Errorf("toggleFollowAll() = %v, want %v", root.FollowAll, !v)
+	}
+	v = root.Doc.FollowSection
+	root.toggleFollowSection(ctx)
+	if v == root.Doc.FollowSection {
+		t.Errorf("toggleFollowSection() = %v, want %v", root.Doc.FollowSection, !v)
+	}
+	v = root.Doc.HideOtherSection
+	root.toggleHideOtherSection(ctx)
+	if v == root.Doc.HideOtherSection {
+		t.Errorf("toggleHideOtherSection() = %v, want %v", root.Doc.HideOtherSection, !v)
+	}
+	v = root.Doc.WatchMode
+	root.toggleWatch(ctx)
+	if v == root.Doc.WatchMode {
+		t.Errorf("toggleWatch() = %v, want %v", root.Doc.WatchMode, !v)
+	}
+	root.toggleWatch(ctx)
+	if v != root.Doc.WatchMode {
+		t.Errorf("toggleWatch() = %v, want %v", root.Doc.WatchMode, v)
+	}
+}
+
+func TestToggleRuler(t *testing.T) {
+	root := rootHelper(t)
+	ctx := context.Background()
+	root.Doc.RulerType = RulerNone
+
+	// Test toggling from RulerNone to RulerRelative
+	root.toggleRuler(ctx)
+	if root.Doc.RulerType != RulerRelative {
+		t.Errorf("expected RulerType to be RulerRelative, got %v", root.Doc.RulerType)
+	}
+
+	// Test toggling from RulerRelative to RulerAbsolute
+	root.toggleRuler(ctx)
+	if root.Doc.RulerType != RulerAbsolute {
+		t.Errorf("expected RulerType to be RulerAbsolute, got %v", root.Doc.RulerType)
+	}
+
+	// Test toggling from RulerAbsolute to RulerNone
+	root.toggleRuler(ctx)
+	if root.Doc.RulerType != RulerNone {
+		t.Errorf("expected RulerType to be RulerNone, got %v", root.Doc.RulerType)
+	}
+}
+
+func Test_rangeBA(t *testing.T) {
+	t.Parallel()
+	type args struct {
+		str string
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    int
+		want1   int
+		wantErr bool
+	}{
+		{
+			name: "testInvalid",
+			args: args{
+				str: "invalid",
+			},
+			want:    0,
+			want1:   0,
+			wantErr: true,
+		},
+		{
+			name: "testInvalid2",
+			args: args{
+				str: "1:invalid",
+			},
+			want:    1,
+			want1:   0,
+			wantErr: true,
+		},
+		{
+			name: "testBefore",
+			args: args{
+				str: "1",
+			},
+			want:    1,
+			want1:   0,
+			wantErr: false,
+		},
+		{
+			name: "testBA",
+			args: args{
+				str: "1:1",
+			},
+			want:    1,
+			want1:   1,
+			wantErr: false,
+		},
+		{
+			name: "testOnlyAfter",
+			args: args{
+				str: ":1",
+			},
+			want:    0,
+			want1:   1,
+			wantErr: false,
+		},
+		{
+			name: "testOnlyBefore",
+			args: args{
+				str: "1:",
+			},
+			want:    1,
+			want1:   0,
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, got1, err := rangeBA(tt.args.str)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("rangeBA() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("rangeBA() got = %v, want %v", got, tt.want)
+			}
+			if got1 != tt.want1 {
+				t.Errorf("rangeBA() got1 = %v, want %v", got1, tt.want1)
+			}
+		})
+	}
+}
+
+func Test_position(t *testing.T) {
+	t.Parallel()
+	type args struct {
+		str    string
+		height int
+	}
+	tests := []struct {
+		name string
+		args args
+		want float64
+	}{
+		{
+			name: "test1",
+			args: args{
+				str:    "1",
+				height: 30,
+			},
+			want: 1,
+		},
+		{
+			name: "test.5",
+			args: args{
+				str:    ".5",
+				height: 30,
+			},
+			want: 15,
+		},
+		{
+			name: "test.25",
+			args: args{
+				str:    ".25",
+				height: 40,
+			},
+			want: 10,
+		},
+		{
+			name: "test.05",
+			args: args{
+				str:    ".05",
+				height: 40,
+			},
+			want: 2,
+		},
+		{
+			name: "test20%",
+			args: args{
+				str:    "20%",
+				height: 30,
+			},
+			want: 6,
+		},
+		{
+			name: "test.3",
+			args: args{
+				str:    "30%",
+				height: 45,
+			},
+			want: 13.5,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := calcPosition(tt.args.str, tt.args.height)
+			if got != tt.want {
+				t.Errorf("position() = %v, want %v", got, tt.want)
+			}
+			if err != nil {
+				t.Errorf("position() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestRoot_setJumpTarget(t *testing.T) {
+	root := rootHelper(t)
+	type fields struct{}
+	type args struct {
+		input string
+	}
+	tests := []struct {
+		name     string
+		fields   fields
+		args     args
+		wantBool bool
+		want     int
+	}{
+		{
+			name: "testJumpTargetBlank",
+			args: args{
+				input: "",
+			},
+			wantBool: false,
+			want:     0,
+		},
+		{
+			name: "testJumpTargetBlank2",
+			args: args{
+				input: "",
+			},
+			wantBool: false,
+			want:     0,
+		},
+		{
+			name: "testJumpTargetOutOfRange",
+			args: args{
+				input: "200",
+			},
+			wantBool: false,
+			want:     0,
+		},
+		{
+			name: "testJumpTarget1",
+			args: args{
+				input: "1",
+			},
+			wantBool: false,
+			want:     1,
+		},
+		{
+			name: "testJumpTarget0",
+			args: args{
+				input: "0",
+			},
+			wantBool: false,
+			want:     0,
+		},
+		{
+			name: "testJumpTarget section",
+			args: args{
+				input: "section",
+			},
+			wantBool: true,
+			want:     0,
+		},
+		{
+			name: "testJumpTargetMinus",
+			args: args{
+				input: "-1",
+			},
+			wantBool: false,
+			want:     23,
+		},
+	}
+	for _, tt := range tests {
+		root.prepareScreen()
+		t.Run(tt.name, func(t *testing.T) {
+			root.setJumpTarget(tt.args.input)
+			if root.Doc.jumpTargetSection != tt.wantBool {
+				t.Errorf("setJumpTarget() = %v, want %v", root.Doc.JumpTarget, tt.wantBool)
+			}
+			if root.Doc.jumpTargetHeight != tt.want {
+				t.Errorf("setJumpTarget() height = %v, want %v", root.Doc.jumpTargetHeight, tt.want)
+			}
+		})
+	}
+}
+
+func Test_jumpPosition(t *testing.T) {
+	t.Parallel()
+	type args struct {
+		str    string
+		height int
+	}
+	tests := []struct {
+		name  string
+		args  args
+		want  int
+		want1 bool
+	}{
+		{
+			name: "test1",
+			args: args{
+				str:    "1",
+				height: 30,
+			},
+			want:  1,
+			want1: false,
+		},
+		{
+			name: "test.3",
+			args: args{
+				str:    ".3",
+				height: 10,
+			},
+			want:  3,
+			want1: false,
+		},
+		{
+			name: "testMinus",
+			args: args{
+				str:    "-10",
+				height: 30,
+			},
+			want:  19,
+			want1: false,
+		},
+		{
+			name: "testInvalid",
+			args: args{
+				str:    "invalid",
+				height: 30,
+			},
+			want:  0,
+			want1: false,
+		},
+		{
+			name: "testInvalid2",
+			args: args{
+				str:    ".i",
+				height: 30,
+			},
+			want:  0,
+			want1: false,
+		},
+		{
+			name: "testInvalid3",
+			args: args{
+				str:    "p%",
+				height: 30,
+			},
+			want:  0,
+			want1: false,
+		},
+		{
+			name: "testSection",
+			args: args{
+				height: 30,
+				str:    "s",
+			},
+			want:  0,
+			want1: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, got1 := jumpPosition(tt.args.str, tt.args.height)
+			if got != tt.want {
+				t.Errorf("jumpPosition() = %v, want %v", got, tt.want)
+			}
+			if got1 != tt.want1 {
+				t.Errorf("jumpPosition() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_toggleColumnMode(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		fileName    string
+		wrapMode    bool
+		columnWidth bool
+	}
+	tests := []struct {
+		name   string
+		fields fields
+	}{
+		{
+			name: "test column noWrap",
+			fields: fields{
+				fileName:    filepath.Join(testdata, "column.txt"),
+				wrapMode:    false,
+				columnWidth: false,
+			},
+		},
+		{
+			name: "test column wrap",
+			fields: fields{
+				fileName:    filepath.Join(testdata, "column.txt"),
+				wrapMode:    true,
+				columnWidth: false,
+			},
+		},
+		{
+			name: "test column width noWrap",
+			fields: fields{
+				fileName:    filepath.Join(testdata, "ps.txt"),
+				wrapMode:    false,
+				columnWidth: true,
+			},
+		},
+		{
+			name: "test column width wrap",
+			fields: fields{
+				fileName:    filepath.Join(testdata, "ps.txt"),
+				wrapMode:    true,
+				columnWidth: true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.fields.fileName)
+			root.Doc.ColumnMode = false
+			root.Doc.WrapMode = tt.fields.wrapMode
+			root.Doc.ColumnWidth = tt.fields.columnWidth
+			root.prepareScreen()
+			ctx := context.Background()
+			root.everyUpdate(ctx)
+			root.toggleColumnMode(ctx)
+			if root.Doc.ColumnMode == false {
+				t.Errorf("toggleColumnMode() = %v, want %v", root.Doc.ColumnMode, true)
+			}
+		})
+	}
+}
+
+func TestRoot_toggleMouse(t *testing.T) {
+	type fields struct {
+		disableMouse bool
+	}
+
+	tests := []struct {
+		name   string
+		fields fields
+		want   bool
+	}{
+		{
+			name:   "testDisable",
+			fields: fields{disableMouse: true},
+			want:   false,
+		},
+		{
+			name:   "testEnable",
+			fields: fields{disableMouse: false},
+			want:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootHelper(t)
+			root.Config.DisableMouse = tt.fields.disableMouse
+			root.toggleMouse(context.Background())
+			if root.Config.DisableMouse != tt.want {
+				t.Errorf("toggleMouse() = %v, want %v", root.Config.DisableMouse, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_goLine(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		fileName string
+	}
+	type args struct {
+		input string
+	}
+	tests := []struct {
+		name        string
+		fields      fields
+		args        args
+		want        int
+		wantMessage string
+	}{
+		{
+			name: "testGoLineBlank",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+			},
+			args: args{
+				input: "",
+			},
+			want:        0,
+			wantMessage: "",
+		},
+		{
+			name: "testGoLine10",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+			},
+			args: args{
+				input: "10",
+			},
+			want:        9,
+			wantMessage: "Moved to line",
+		},
+		{
+			name: "testGoLine.5",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+			},
+			args: args{
+				input: ".5",
+			},
+			want:        499,
+			wantMessage: "Moved to line",
+		},
+		{
+			name: "testGoLine20%",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+			},
+			args: args{
+				input: "20%",
+			},
+			want:        199,
+			wantMessage: "Moved to line",
+		},
+		{
+			name: "testGoLineInvalid",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+			},
+			args: args{
+				input: "invalid",
+			},
+			want:        0,
+			wantMessage: "invalid number",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.fields.fileName)
+			root.goLine(tt.args.input)
+			if root.Doc.topLN != tt.want {
+				t.Errorf("goLine() = %v, want %v", root.Doc.topLN, tt.want)
+			}
+			if !strings.Contains(root.message, tt.wantMessage) {
+				t.Errorf("goLine() = %v, want %v", root.message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func TestRoot_setBreakIndent(t *testing.T) {
+	root := rootHelper(t)
+	root.Doc.BreakIndent = "0"
+	root.setBreakIndent("L+2")
+	if root.Doc.BreakIndent != "L+2" {
+		t.Errorf("setBreakIndent() = %q, want %q", root.Doc.BreakIndent, "L+2")
+	}
+	root.setBreakIndent("L+x")
+	if root.Doc.BreakIndent != "L+2" || root.message != ErrInvalidNumber.Error() {
+		t.Errorf("invalid setBreakIndent() left indent %q and message %q", root.Doc.BreakIndent, root.message)
+	}
+}
+
+func TestRoot_setSignMode(t *testing.T) {
+	root := rootHelper(t)
+	root.Doc.WrapMode = true
+	root.prepareScreen()
+	root.Doc.cache.Add(0, LineC{})
+	root.setSignMode("3")
+	if root.Doc.SignMode != 3 {
+		t.Errorf("setSignMode() = %d, want 3", root.Doc.SignMode)
+	}
+	if root.Doc.cache.Len() != 0 {
+		t.Errorf("setSignMode() left %d cached lines, want 0", root.Doc.cache.Len())
+	}
+	root.prepareDraw(context.Background())
+	if root.Doc.leftSignWidth != root.scr.breakSignWidth || root.Doc.rightSignWidth != root.scr.continueSignWidth {
+		t.Errorf("setSignMode() sign widths = (%d, %d), want (%d, %d)", root.Doc.leftSignWidth, root.Doc.rightSignWidth, root.scr.breakSignWidth, root.scr.continueSignWidth)
+	}
+	root.setSignMode("invalid")
+	if root.Doc.SignMode != 3 || root.message != ErrInvalidNumber.Error() {
+		t.Errorf("invalid setSignMode() left mode %d and message %q", root.Doc.SignMode, root.message)
+	}
+	for _, input := range []string{"-1", "8"} {
+		root.setSignMode(input)
+		if root.Doc.SignMode != 3 || root.message != ErrInvalidNumber.Error() {
+			t.Errorf("out-of-range setSignMode(%q) left mode %d and message %q", input, root.Doc.SignMode, root.message)
+		}
+	}
+}
+
+func TestRoot_setHeader(t *testing.T) {
+	root := rootHelper(t)
+	root.prepareScreen()
+	type args struct {
+		input string
+	}
+	tests := []struct {
+		name string
+		args args
+		want int
+	}{
+		{
+			name: "testSetHeaderNil",
+			args: args{
+				input: "",
+			},
+			want: 0,
+		},
+		{
+			name: "testSetHeaderMinus",
+			args: args{
+				input: "-1",
+			},
+			want: 0,
+		},
+		{
+			name: "testSetHeader1",
+			args: args{
+				input: "1",
+			},
+			want: 1,
+		},
+		{
+			name: "testSetHeaderNoChange",
+			args: args{
+				input: "1",
+			},
+			want: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root.setHeader(tt.args.input)
+			if root.Doc.Header != tt.want {
+				t.Errorf("setHeader() = %v, want %v", root.Doc.Header, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_setSkipLines(t *testing.T) {
+	root := rootHelper(t)
+	root.prepareScreen()
+	type args struct {
+		input string
+	}
+	tests := []struct {
+		name string
+		args args
+		want int
+	}{
+		{
+			name: "testSetSkipErr",
+			args: args{
+				input: "err",
+			},
+			want: 0,
+		},
+		{
+			name: "testSetSkipLines1",
+			args: args{
+				input: "1",
+			},
+			want: 1,
+		},
+		{
+			name: "testSetSkipLinesNoChange",
+			args: args{
+				input: "1",
+			},
+			want: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root.setSkipLines(tt.args.input)
+			if root.Doc.SkipLines != tt.want {
+				t.Errorf("setSkipLines() = %v, want %v", root.Doc.SkipLines, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_setSectioNum(t *testing.T) {
+	root := rootHelper(t)
+	root.prepareScreen()
+	type args struct {
+		input string
+	}
+	tests := []struct {
+		name string
+		args args
+		want int
+	}{
+		{
+			name: "testSetSectionNumNil",
+			args: args{
+				input: "",
+			},
+			want: 0,
+		},
+		{
+			name: "testSetSectionNum1",
+			args: args{
+				input: "1",
+			},
+			want: 1,
+		},
+		{
+			name: "testSetSectionNumNoChange",
+			args: args{
+				input: "1",
+			},
+			want: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root.setSectionNum(tt.args.input)
+			if root.Doc.SectionHeaderNum != tt.want {
+				t.Errorf("setSectionNum() = %v, want %v", root.Doc.SectionHeaderNum, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_setSectionStart(t *testing.T) {
+	root := rootHelper(t)
+	root.prepareScreen()
+	type args struct {
+		input string
+	}
+	tests := []struct {
+		name string
+		args args
+		want int
+	}{
+		{
+			name: "testSetSectionStartNil",
+			args: args{
+				input: "",
+			},
+			want: 0,
+		},
+		{
+			name: "testSetSectionStartMinus",
+			args: args{
+				input: "-1",
+			},
+			want: -1,
+		},
+		{
+			name: "testSetSectionStart1",
+			args: args{
+				input: "1",
+			},
+			want: 1,
+		},
+		{
+			name: "testSetSectionStartOutOfrange",
+			args: args{
+				input: "100",
+			},
+			want: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root.setSectionStart(tt.args.input)
+			if root.Doc.SectionStartPosition != tt.want {
+				t.Errorf("setSectionStart() = %v, want %v", root.Doc.SectionStartPosition, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_searchGo(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		fileName          string
+		searchWord        string
+		jumpTargetSection bool
+		sectionDelimiter  string
+	}
+	type args struct {
+		lN int
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		args   args
+		want   int
+	}{
+		{
+			name: "testSearchGo1",
+			fields: fields{
+				fileName:          filepath.Join(testdata, "MOCK_DATA.csv"),
+				searchWord:        "1",
+				sectionDelimiter:  "",
+				jumpTargetSection: false,
+			},
+			args: args{
+				lN: 1,
+			},
+			want: 1,
+		},
+		{
+			name: "test section2-1",
+			fields: fields{
+				fileName:          filepath.Join(testdata, "section2.txt"),
+				searchWord:        "5",
+				sectionDelimiter:  "^-",
+				jumpTargetSection: false,
+			},
+			args: args{
+				lN: 1,
+			},
+			want: 1,
+		},
+		{
+			name: "test section2-2",
+			fields: fields{
+				fileName:          filepath.Join(testdata, "section2.txt"),
+				searchWord:        "5",
+				sectionDelimiter:  "^-",
+				jumpTargetSection: true,
+			},
+			args: args{
+				lN: 5,
+			},
+			want: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.fields.fileName)
+			root.Doc.WrapMode = true
+			root.prepareScreen()
+			ctx := context.Background()
+			root.everyUpdate(ctx)
+			root.prepareDraw(ctx)
+			root.setSearcher(tt.fields.searchWord, false)
+			root.Doc.jumpTargetSection = tt.fields.jumpTargetSection
+			root.setSectionDelimiter(tt.fields.sectionDelimiter)
+			root.Doc.SectionHeader = true
+			root.searchGo(ctx, tt.args.lN, root.searcher)
+			if root.Doc.topLN != tt.want {
+				t.Errorf("searchGo() = %v, want %v", root.Doc.topLN, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_setMultiColor(t *testing.T) {
+	root := rootHelper(t)
+	type args struct {
+		input string
+	}
+	tests := []struct {
+		name string
+		args args
+		want []string
+	}{
+		{
+			name: "testSetMultiColor",
+			args: args{
+				input: "red,blue",
+			},
+			want: []string{"red", "blue"},
+		},
+		{
+			name: "testSetMultiColor2",
+			args: args{
+				input: "red,\"blue\"",
+			},
+			want: []string{"red", "blue"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root.setMultiColor(tt.args.input)
+			if reflect.DeepEqual(root.Doc.MultiColorWords, tt.want) {
+				t.Errorf("setMultiColor() = %v, want %v", root.Doc.MultiColorWords, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_setTabWidth(t *testing.T) {
+	root := rootHelper(t)
+	root.prepareScreen()
+	type args struct {
+		input string
+	}
+	tests := []struct {
+		name string
+		args args
+		want int
+	}{
+		{
+			name: "testSetTabWidth4",
+			args: args{
+				input: "4",
+			},
+			want: 4,
+		},
+		{
+			name: "testSetTabWidth8",
+			args: args{
+				input: "8",
+			},
+			want: 8,
+		},
+		{
+			name: "testSetTabWidth0",
+			args: args{
+				input: "0",
+			},
+			want: 0,
+		},
+		{
+			name: "testSetTabWidthInvalid",
+			args: args{
+				input: "invalid",
+			},
+			want: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root.Doc.TabWidth = 0
+			root.setTabWidth(tt.args.input)
+			if root.Doc.TabWidth != tt.want {
+				t.Errorf("got %v, want %v", root.Doc.TabWidth, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_ColumnDelimiterWrapMode(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		wrapMode     bool
+		x            int
+		columnCursor int
+	}
+	type want struct {
+		wrapMode     bool
+		x            int
+		columnCursor int
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		want   want
+	}{
+		{
+			name: "testWrapMode0",
+			fields: fields{
+				x:            0,
+				columnCursor: 0,
+				wrapMode:     false,
+			},
+			want: want{
+				x:            0,
+				columnCursor: 0,
+				wrapMode:     true,
+			},
+		},
+		{
+			name: "testWrapMode1",
+			fields: fields{
+				x:            10,
+				columnCursor: 1,
+				wrapMode:     false,
+			},
+			want: want{
+				x:            10,
+				columnCursor: 1,
+				wrapMode:     true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, filepath.Join(testdata, "MOCK_DATA.csv"))
+			root.prepareScreen()
+			ctx := context.Background()
+			root.prepareDraw(ctx)
+			root.setDelimiter(",")
+			root.Doc.ColumnMode = true
+			root.Doc.WrapMode = tt.fields.wrapMode
+			root.Doc.scrollX = tt.fields.x
+			root.Doc.columnCursor = tt.fields.columnCursor
+			root.toggleWrapMode(ctx)
+			if root.Doc.WrapMode != tt.want.wrapMode {
+				t.Errorf("ColumnDelimiter WrapMode() mode = %v, want %v", root.Doc.WrapMode, tt.want.wrapMode)
+			}
+			if root.Doc.scrollX != tt.want.x {
+				t.Errorf("ColumnDelimiter WrapMode() x = %v, want %v", root.Doc.scrollX, tt.want.x)
+			}
+			if root.Doc.columnCursor != tt.want.columnCursor {
+				t.Errorf("ColumnDelimiter WrapMode() columnCursor = %v, want %v", root.Doc.columnCursor, tt.want.columnCursor)
+			}
+		})
+	}
+}
+
+func TestRoot_ColumnWidthWrapMode(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	root := rootFileReadHelper(t, filepath.Join(testdata, "ps.txt"))
+	root.prepareScreen()
+	type fields struct {
+		wrapMode     bool
+		x            int
+		columnCursor int
+	}
+	type want struct {
+		wrapMode     bool
+		x            int
+		columnCursor int
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		want   want
+	}{
+		{
+			name: "testWrapMode0",
+			fields: fields{
+				x:            0,
+				columnCursor: 0,
+				wrapMode:     false,
+			},
+			want: want{
+				x:            0,
+				columnCursor: 0,
+				wrapMode:     true,
+			},
+		},
+		{
+			name: "testWrapMode1",
+			fields: fields{
+				x:            10,
+				columnCursor: 1,
+				wrapMode:     false,
+			},
+			want: want{
+				x:            10,
+				columnCursor: 1,
+				wrapMode:     true,
+			},
+		},
+		{
+			name: "testWrapMode2",
+			fields: fields{
+				x:            10,
+				columnCursor: 15,
+				wrapMode:     false,
+			},
+			want: want{
+				x:            10,
+				columnCursor: 15,
+				wrapMode:     true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			root.Doc.ColumnWidth = true
+			root.Doc.WrapMode = tt.fields.wrapMode
+			root.Doc.scrollX = tt.fields.x
+			root.Doc.columnCursor = tt.fields.columnCursor
+			root.Doc.setColumnWidths()
+			root.prepareDraw(ctx)
+			root.toggleWrapMode(ctx)
+			if root.Doc.WrapMode != tt.want.wrapMode {
+				t.Errorf("ColumnWidth WrapMode() mode = %v, want %v", root.Doc.WrapMode, tt.want.wrapMode)
+			}
+			if root.Doc.scrollX != tt.want.x {
+				t.Errorf("ColumnWidth WrapMode() x = %v, want %v", root.Doc.scrollX, tt.want.x)
+			}
+			if root.Doc.columnCursor != tt.want.columnCursor {
+				t.Errorf("ColumnWidth WrapMode() columnCursor = %v, want %v", root.Doc.columnCursor, tt.want.columnCursor)
+			}
+		})
+	}
+}
+
+func TestRoot_setWriteBA(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		fileName string
+	}
+	type args struct {
+		input string
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		args   args
+		want   bool
+	}{
+		{
+			name: "testWriteBA",
+			fields: fields{
+				fileName: filepath.Join(testdata, "test3.txt"),
+			},
+			args: args{
+				input: "1:2",
+			},
+			want: true,
+		},
+		{
+			name: "testWriteBA",
+			fields: fields{
+				fileName: filepath.Join(testdata, "test3.txt"),
+			},
+			args: args{
+				input: "err",
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.fields.fileName)
+			ctx := context.Background()
+			root.setWriteBA(ctx, tt.args.input)
+			if root.Config.IsWriteOnExit != tt.want {
+				t.Errorf("setWriteBA() = %v, want %v", root.Config.IsWriteOnExit, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_modeConfig(t *testing.T) {
+	type args struct {
+		modeName string
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    RunTimeSettings
+		wantErr bool
+	}{
+		{
+			name: "testModeConfig error",
+			args: args{
+				modeName: "test",
+			},
+			want:    RunTimeSettings{},
+			wantErr: true,
+		},
+		{
+			name: "testModeConfig general",
+			args: args{
+				modeName: nameGeneral,
+			},
+			want:    NewRunTimeSettings(),
+			wantErr: false,
+		},
+		{
+			name: "testModeConfig a",
+			args: args{
+				modeName: "a",
+			},
+			want:    NewRunTimeSettings(),
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootHelper(t)
+			root.Config = Config{
+				Mode: map[string]General{
+					"a": {},
+					"b": {},
+				},
+			}
+			got, err := root.modeConfig(tt.args.modeName)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Root.modeConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Root.modeConfig() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_follow(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		wrapMode bool
+	}
+	type args struct {
+		fileNames []string
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		args   args
+		want   int
+	}{
+		{
+			name: "testFollow1",
+			fields: fields{
+				wrapMode: false,
+			},
+			args: args{
+				fileNames: []string{filepath.Join(testdata, "test3.txt")},
+			},
+			want: 12322,
+		},
+		{
+			name: "testFollow2",
+			fields: fields{
+				wrapMode: true,
+			},
+			args: args{
+				fileNames: []string{filepath.Join(testdata, "test3.txt")},
+			},
+			want: 12322,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.args.fileNames...)
+			root.Doc.WrapMode = tt.fields.wrapMode
+			ctx := context.Background()
+			root.prepareScreen()
+			root.everyUpdate(ctx)
+			root.follow(ctx)
+			if root.Doc.topLN != tt.want {
+				t.Errorf("follow() topLN = %v, want %v", root.Doc.topLN, tt.want)
+			}
+			root.Cancel(ctx)
+		})
+	}
+}
+
+func TestRoot_followAll(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		wrapMode bool
+	}
+	type args struct {
+		fileNames []string
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		args   args
+		want   int
+	}{
+		{
+			name: "testFollowAll1",
+			fields: fields{
+				wrapMode: false,
+			},
+			args: args{
+				fileNames: []string{
+					filepath.Join(testdata, "test3.txt"),
+					filepath.Join(testdata, "test.txt"),
+				},
+			},
+			want: 12322,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.args.fileNames...)
+			root.setFollowAll(true)
+			root.Doc.WrapMode = tt.fields.wrapMode
+			ctx := context.Background()
+			root.prepareScreen()
+			root.everyUpdate(ctx)
+			root.followAll(ctx)
+			if root.Doc.topLN != tt.want {
+				t.Errorf("follow() topLN = %v, want %v", root.Doc.topLN, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_WriteQuit(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		fileNames        []string
+		sectionDelimiter string
+		HideOtherSection bool
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		want   int
+	}{
+		{
+			name: "testWriteQuit1",
+			fields: fields{
+				fileNames:        []string{filepath.Join(testdata, "section.txt")},
+				sectionDelimiter: "",
+				HideOtherSection: false,
+			},
+			want: 10,
+		},
+		{
+			name: "testWriteQuit2",
+			fields: fields{
+				fileNames:        []string{filepath.Join(testdata, "section.txt")},
+				sectionDelimiter: "",
+				HideOtherSection: true,
+			},
+			want: 10,
+		},
+		{
+			name: "testWriteQuit3",
+			fields: fields{
+				fileNames:        []string{filepath.Join(testdata, "section.txt")},
+				sectionDelimiter: "^#",
+				HideOtherSection: true,
+			},
+			want: 2,
+		},
+		{
+			name: "testWriteQuit4",
+			fields: fields{
+				fileNames:        []string{filepath.Join(testdata, "section.txt")},
+				sectionDelimiter: "^notfound",
+				HideOtherSection: true,
+			},
+			want: 10,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.fields.fileNames...)
+			root.prepareScreen()
+			ctx := context.Background()
+			root.setSectionDelimiter(tt.fields.sectionDelimiter)
+			root.Doc.SectionHeader = true
+			root.Doc.HideOtherSection = tt.fields.HideOtherSection
+			root.prepareDraw(ctx)
+			root.draw(ctx)
+			root.WriteQuit(ctx)
+			if got := len(root.OnExit); got != tt.want {
+				t.Errorf("WriteQuit() OnExit = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_tailSection(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		fileNames        []string
+		sectionDelimiter string
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		want   int
+	}{
+		{
+			name: "testTailSection",
+			fields: fields{
+				fileNames:        []string{filepath.Join(testdata, "section.txt")},
+				sectionDelimiter: "^#",
+			},
+			want: 8,
+		},
+		{
+			name: "testTailSectionErr",
+			fields: fields{
+				fileNames:        []string{filepath.Join(testdata, "section.txt")},
+				sectionDelimiter: "^testtesttest",
+			},
+			want: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.fields.fileNames...)
+			root.prepareScreen()
+			ctx := context.Background()
+			root.setSectionDelimiter(tt.fields.sectionDelimiter)
+			root.tailSection(ctx)
+			if got := root.Doc.lastSectionPosNum; got != tt.want {
+				t.Errorf("tailSection() lastSectionPosNum = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_setConverter(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type args struct {
+		name string
+	}
+	tests := []struct {
+		name string
+		args args
+		want Converter
+	}{
+		{
+			name: "testSetConverterEscape",
+			args: args{
+				name: convEscaped,
+			},
+			want: newESConverter(),
+		},
+		{
+			name: "testSetConverterRaw",
+			args: args{
+				name: convRaw,
+			},
+			want: newRawConverter(),
+		},
+		{
+			name: "testSetConverterAlign",
+			args: args{
+				name: convAlign,
+			},
+			want: newAlignConverter(false),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootHelper(t)
+			ctx := context.Background()
+			root.setConverter(ctx, tt.args.name)
+			if root.Doc.Converter != tt.args.name {
+				t.Errorf("setConverter() name = %v, want %v", root.Doc.Converter, tt.args.name)
+			}
+			got := root.Doc.converterType(root.Doc.Converter)
+			switch tt.args.name {
+			case convEscaped:
+				if _, ok := got.(*escapeSequence); !ok {
+					t.Errorf("setConverter() type = %T, want *escapeSequence", got)
+				}
+			case convRaw:
+				if _, ok := got.(*rawConverter); !ok {
+					t.Errorf("setConverter() type = %T, want *rawConverter", got)
+				}
+			case convAlign:
+				if _, ok := got.(*align); !ok {
+					t.Errorf("setConverter() type = %T, want *align", got)
+				}
+			}
+		})
+	}
+}
+
+func TestRoot_ShrinkColumn(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		fileName  string
+		converter string
+	}
+	type args struct {
+		cursor int
+		shrink bool
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		wantErr bool
+	}{
+		{
+			name: "testShrinkColumn",
+			fields: fields{
+				fileName:  filepath.Join(testdata, "MOCK_DATA.csv"),
+				converter: convAlign,
+			},
+			args: args{
+				cursor: 0,
+				shrink: true,
+			},
+			wantErr: false,
+		},
+		{
+			name: "testShrinkColumnFalse",
+			fields: fields{
+				fileName:  filepath.Join(testdata, "MOCK_DATA.csv"),
+				converter: convEscaped,
+			},
+			args: args{
+				cursor: 0,
+				shrink: true,
+			},
+			wantErr: true,
+		},
+		{
+			name: "testShrinkColumnOver",
+			fields: fields{
+				fileName:  filepath.Join(testdata, "MOCK_DATA.csv"),
+				converter: convAlign,
+			},
+			args: args{
+				cursor: 20,
+				shrink: true,
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.fields.fileName)
+			ctx := context.Background()
+			root.prepareScreen()
+			root.Doc.Converter = tt.fields.converter
+			root.Doc.ColumnDelimiter = ","
+			root.prepareDraw(ctx)
+			if err := root.Doc.shrinkColumn(tt.args.cursor, tt.args.shrink); (err != nil) != tt.wantErr {
+				t.Errorf("Root.ShrinkColumn() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestRoot_toggleRightAlign(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		fileName    string
+		columnAttrs []columnAttribute
+		converter   string
+	}
+	type args struct {
+		cursor int
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    specifiedAlign
+		wantErr bool
+	}{
+		{
+			name: "testToggleRightAlign",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnAttrs: []columnAttribute{
+					{shrink: false, specifiedAlign: LeftAlign},
+					{shrink: false, specifiedAlign: LeftAlign},
+				},
+				converter: convAlign,
+			},
+			args: args{
+				cursor: 0,
+			},
+			want:    RightAlign,
+			wantErr: false,
+		},
+		{
+			name: "testToggleRightAlignFalse",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnAttrs: []columnAttribute{
+					{shrink: false, specifiedAlign: LeftAlign},
+					{shrink: false, specifiedAlign: LeftAlign},
+				},
+				converter: convEscaped,
+			},
+			args: args{
+				cursor: 0,
+			},
+			want:    Unspecified,
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.fields.fileName)
+			ctx := context.Background()
+			root.prepareScreen()
+			root.Doc.Converter = tt.fields.converter
+			root.Doc.alignConv.columnAttrs = tt.fields.columnAttrs
+			root.prepareDraw(ctx)
+			got, err := root.Doc.toggleRightAlign(tt.args.cursor)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Document.toggleRightAlign() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("Document.toggleRightAlign() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDocument_specifiedAlign(t *testing.T) {
+	type fields struct {
+		fileName    string
+		columnAttrs []columnAttribute
+		converter   string
+	}
+	type args struct {
+		cursor int
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    specifiedAlign
+		wantErr bool
+	}{
+		{
+			name: "testValidColumn",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnAttrs: []columnAttribute{
+					{shrink: false, specifiedAlign: LeftAlign},
+					{shrink: false, specifiedAlign: LeftAlign},
+				},
+				converter: convAlign,
+			},
+			args: args{
+				cursor: 0,
+			},
+			want:    RightAlign,
+			wantErr: false,
+		},
+		{
+			name: "testInvalidColumn",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnAttrs: []columnAttribute{
+					{shrink: false, specifiedAlign: LeftAlign},
+					{shrink: false, specifiedAlign: LeftAlign},
+				},
+				converter: convAlign,
+			},
+			args: args{
+				cursor: 11,
+			},
+			want:    Unspecified,
+			wantErr: true,
+		},
+		{
+			name: "testNotAlignMode",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnAttrs: []columnAttribute{
+					{shrink: false, specifiedAlign: LeftAlign},
+					{shrink: false, specifiedAlign: LeftAlign},
+				},
+				converter: convEscaped,
+			},
+			args: args{
+				cursor: 0,
+			},
+			want:    Unspecified,
+			wantErr: true,
+		},
+		{
+			name: "testCycleAlign",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnAttrs: []columnAttribute{
+					{shrink: false, specifiedAlign: LeftAlign},
+					{shrink: false, specifiedAlign: LeftAlign},
+				},
+				converter: convAlign,
+			},
+			args: args{
+				cursor: 0,
+			},
+			want:    RightAlign,
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := OpenDocument(tt.fields.fileName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.Converter = tt.fields.converter
+			m.alignConv.columnAttrs = tt.fields.columnAttrs
+			got, err := m.toggleRightAlign(tt.args.cursor)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Document.specifiedAlign() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("Document.specifiedAlign() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDocument_closeFile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		seekable bool
+		wantErr  bool
+	}{
+		{
+			name:     "testCloseNonSeekableFile",
+			seekable: false,
+			wantErr:  false,
+		},
+		{
+			name:     "testCloseSeekableFile",
+			seekable: true,
+			wantErr:  true, // seekable file close returns error in test
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			doc, err := OpenDocument(filepath.Join(testdata, "test.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer doc.close()
+
+			doc.seekable = tt.seekable
+
+			err = doc.closeFile()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("closeFile() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestRoot_reload(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		fileName      string
+		preventReload bool
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		wantErr bool
+		message string
+	}{
+		{
+			name: "testReloadSuccess",
+			fields: fields{
+				fileName:      filepath.Join(testdata, "test3.txt"),
+				preventReload: false,
+			},
+			wantErr: false,
+			message: "reload file ",
+		},
+		{
+			name: "testReloadError",
+			fields: fields{
+				fileName:      filepath.Join(testdata, "test3.txt"),
+				preventReload: true,
+			},
+			wantErr: true,
+			message: "cannot reload: ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.fields.fileName)
+			root.prepareScreen()
+			root.Doc.FileName = tt.fields.fileName
+			root.Doc.preventReload = tt.fields.preventReload
+			root.reload(root.Doc)
+			if tt.wantErr && !strings.Contains(root.message, tt.message) {
+				t.Errorf("expected error message log, got %v", root.message)
+			}
+			if !tt.wantErr && !strings.Contains(root.message, tt.message) {
+				t.Errorf("expected success message log, got %v", root.message)
+			}
+		})
+	}
+}
+
+func TestRoot_format(t *testing.T) {
+	root := rootHelper(t)
+	tests := []struct {
+		name        string
+		converter   string
+		formatFunc  func(ctx context.Context)
+		wantMessage string
+	}{
+		{
+			name:        "testAlignFormat",
+			converter:   convRaw,
+			formatFunc:  func(ctx context.Context) { root.alignFormat(ctx) },
+			wantMessage: "Set align converter",
+		},
+		{
+			name:        "testAlignFormatAlreadySet",
+			converter:   convAlign,
+			formatFunc:  func(ctx context.Context) { root.alignFormat(ctx) },
+			wantMessage: "Set es converter",
+		},
+		{
+			name:        "testRawFormat",
+			converter:   convAlign,
+			formatFunc:  func(ctx context.Context) { root.rawFormat(ctx) },
+			wantMessage: "Set raw converter",
+		},
+		{
+			name:        "testRawFormatAlreadySet",
+			converter:   convRaw,
+			formatFunc:  func(ctx context.Context) { root.rawFormat(ctx) },
+			wantMessage: "Set es converter",
+		},
+		{
+			name:        "testEsFormat",
+			converter:   "",
+			formatFunc:  func(ctx context.Context) { root.esFormat(ctx) },
+			wantMessage: "Set es converter",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			root.Doc.Converter = tt.converter
+			tt.formatFunc(ctx)
+			if !strings.Contains(root.message, tt.wantMessage) {
+				t.Errorf("format() = %v, want %v", root.message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func TestRoot_setVerticalHeader(t *testing.T) {
+	root := rootHelper(t)
+	root.prepareScreen()
+	type args struct {
+		input string
+	}
+	tests := []struct {
+		name string
+		args args
+		want int
+	}{
+		{
+			name: "testSetVerticalHeaderNil",
+			args: args{
+				input: "",
+			},
+			want: 0,
+		},
+		{
+			name: "testSetVerticalHeaderMinus",
+			args: args{
+				input: "-1",
+			},
+			want: 0,
+		},
+		{
+			name: "testSetVerticalHeader1",
+			args: args{
+				input: "1",
+			},
+			want: 1,
+		},
+		{
+			name: "testSetVerticalHeaderNoChange",
+			args: args{
+				input: "1",
+			},
+			want: 1,
+		},
+		{
+			name: "testSetVerticalHeaderOutOfRange",
+			args: args{
+				input: "100",
+			},
+			want: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root.setVerticalHeader(tt.args.input)
+			if root.Doc.VerticalHeader != tt.want {
+				t.Errorf("setVerticalHeader() = %v, want %v", root.Doc.VerticalHeader, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_setHeaderColumn(t *testing.T) {
+	root := rootHelper(t)
+	root.prepareScreen()
+	type args struct {
+		input string
+	}
+	tests := []struct {
+		name string
+		args args
+		want int
+	}{
+		{
+			name: "testSetHeaderColumnNil",
+			args: args{
+				input: "",
+			},
+			want: 0,
+		},
+		{
+			name: "testSetHeaderColumnInvalid",
+			args: args{
+				input: "invalid",
+			},
+			want: 0,
+		},
+		{
+			name: "testSetHeaderColumn1",
+			args: args{
+				input: "1",
+			},
+			want: 1,
+		},
+		{
+			name: "testSetHeaderColumnNoChange",
+			args: args{
+				input: "1",
+			},
+			want: 1,
+		},
+		{
+			name: "testSetHeaderColumnChange",
+			args: args{
+				input: "2",
+			},
+			want: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root.setHeaderColumn(tt.args.input)
+			if root.Doc.HeaderColumn != tt.want {
+				t.Errorf("setHeaderColumn() = %v, want %v", root.Doc.HeaderColumn, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_toggleFixedColumn(t *testing.T) {
+	root := rootHelper(t)
+	root.prepareScreen()
+	ctx := context.Background()
+	type fields struct {
+		columnCursor int
+		columnStart  int
+		headerColumn int
+	}
+	tests := []struct {
+		name         string
+		fields       fields
+		wantHeader   int
+		wantVertical int
+	}{
+		{
+			name: "testToggleFixedColumnSet",
+			fields: fields{
+				columnCursor: 5,
+				columnStart:  3,
+				headerColumn: 0,
+			},
+			wantHeader:   3,
+			wantVertical: 0,
+		},
+		{
+			name: "testToggleFixedColumnUnset",
+			fields: fields{
+				columnCursor: 5,
+				columnStart:  3,
+				headerColumn: 3,
+			},
+			wantHeader:   0,
+			wantVertical: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root.Doc.columnCursor = tt.fields.columnCursor
+			root.Doc.columnStart = tt.fields.columnStart
+			root.Doc.HeaderColumn = tt.fields.headerColumn
+			root.toggleFixedColumn(ctx)
+			if root.Doc.HeaderColumn != tt.wantHeader {
+				t.Errorf("toggleFixedColumn() HeaderColumn = %v, want %v", root.Doc.HeaderColumn, tt.wantHeader)
+			}
+			if root.Doc.VerticalHeader != tt.wantVertical {
+				t.Errorf("toggleFixedColumn() VerticalHeader = %v, want %v", root.Doc.VerticalHeader, tt.wantVertical)
+			}
+		})
+	}
+}
+
+func TestRoot_toggleShrinkColumn(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+	type fields struct {
+		fileName     string
+		columnCursor int
+		converter    string
+	}
+	tests := []struct {
+		name       string
+		fields     fields
+		wantShrink bool
+		wantErr    bool
+	}{
+		{
+			name: "testToggleShrinkColumn",
+			fields: fields{
+				fileName:     filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnCursor: 1,
+				converter:    convAlign,
+			},
+			wantShrink: true,
+			wantErr:    false,
+		},
+		{
+			name: "testToggleShrinkColumnInvalidConverter",
+			fields: fields{
+				fileName:     filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnCursor: 0,
+				converter:    convEscaped,
+			},
+			wantShrink: false,
+			wantErr:    true,
+		},
+		{
+			name: "testToggleShrinkColumnInvalidCursor",
+			fields: fields{
+				fileName:     filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnCursor: 20,
+				converter:    convAlign,
+			},
+			wantShrink: false,
+			wantErr:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := rootFileReadHelper(t, tt.fields.fileName)
+			ctx := context.Background()
+			root.prepareScreen()
+			root.Doc.ColumnDelimiter = ","
+			root.Doc.Converter = tt.fields.converter
+			root.setConverter(ctx, tt.fields.converter)
+			root.Doc.columnCursor = tt.fields.columnCursor
+			root.prepareDraw(ctx)
+			root.toggleShrinkColumn(ctx)
+			shrink, err := root.Doc.isColumnShrink(tt.fields.columnCursor)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("toggleShrinkColumn() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if shrink != tt.wantShrink {
+				t.Errorf("toggleShrinkColumn() shrink = %v, want %v", shrink, tt.wantShrink)
+			}
+		})
+	}
+}
+
+func TestDocument_toggleRightAlign(t *testing.T) {
+	type fields struct {
+		fileName    string
+		columnAttrs []columnAttribute
+		converter   string
+	}
+	type args struct {
+		cursor int
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    specifiedAlign
+		wantErr bool
+	}{
+		{
+			name: "testValidColumn",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnAttrs: []columnAttribute{
+					{shrink: false, specifiedAlign: LeftAlign},
+					{shrink: false, specifiedAlign: LeftAlign},
+				},
+				converter: convAlign,
+			},
+			args: args{
+				cursor: 0,
+			},
+			want:    RightAlign,
+			wantErr: false,
+		},
+		{
+			name: "testInvalidColumn",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnAttrs: []columnAttribute{
+					{shrink: false, specifiedAlign: LeftAlign},
+					{shrink: false, specifiedAlign: LeftAlign},
+				},
+				converter: convAlign,
+			},
+			args: args{
+				cursor: 11,
+			},
+			want:    Unspecified,
+			wantErr: true,
+		},
+		{
+			name: "testNotAlignMode",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnAttrs: []columnAttribute{
+					{shrink: false, specifiedAlign: LeftAlign},
+					{shrink: false, specifiedAlign: LeftAlign},
+				},
+				converter: convEscaped,
+			},
+			args: args{
+				cursor: 0,
+			},
+			want:    Unspecified,
+			wantErr: true,
+		},
+		{
+			name: "testCycleAlign",
+			fields: fields{
+				fileName: filepath.Join(testdata, "MOCK_DATA.csv"),
+				columnAttrs: []columnAttribute{
+					{shrink: false, specifiedAlign: LeftAlign},
+					{shrink: false, specifiedAlign: LeftAlign},
+				},
+				converter: convAlign,
+			},
+			args: args{
+				cursor: 0,
+			},
+			want:    RightAlign,
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := OpenDocument(tt.fields.fileName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.Converter = tt.fields.converter
+			m.alignConv.columnAttrs = tt.fields.columnAttrs
+			got, err := m.toggleRightAlign(tt.args.cursor)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Document.toggleRightAlign() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("Document.toggleRightAlign() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_setViewMode(t *testing.T) {
+	root := rootHelper(t)
+	ctx := context.Background()
+
+	type args struct {
+		modeName string
+	}
+	tests := []struct {
+		name          string
+		ViewMode      string
+		args          args
+		general       General
+		wantErr       bool
+		wantMessage   string
+		wantCaption   string
+		wantConverter string
+	}{
+		{
+			name:     "testSetViewModeEmpty",
+			ViewMode: "General",
+			args: args{
+				modeName: "",
+			},
+			general: General{
+				Converter: new("es"),
+			},
+			wantErr:       false,
+			wantMessage:   "",
+			wantConverter: convEscaped,
+		},
+		{
+			name: "testSetViewModeGeneral",
+			args: args{
+				modeName: nameGeneral,
+			},
+			ViewMode: "General",
+			general: General{
+				Converter: new("es"),
+			},
+			wantErr:       false,
+			wantMessage:   "Set mode general",
+			wantCaption:   "",
+			wantConverter: convEscaped,
+		},
+		{
+			name:     "testSetViewModeCustom",
+			ViewMode: "custom",
+			args: args{
+				modeName: "custom",
+			},
+			general: General{
+				Caption:   new("Custom Mode"),
+				Converter: new("align"),
+			},
+			wantErr:       false,
+			wantMessage:   "Set mode custom",
+			wantCaption:   "Custom Mode",
+			wantConverter: convAlign,
+		},
+		{
+			name:     "testSetViewModeNotFound",
+			ViewMode: "notfound",
+			args: args{
+				modeName: "not",
+			},
+			general: General{
+				Caption: new("Not Found Mode"),
+			},
+			wantErr:     true,
+			wantMessage: "view mode not found: not",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root.Config = Config{
+				Mode: map[string]General{
+					tt.ViewMode: tt.general,
+				},
+			}
+			root.Doc.Caption = ""
+			root.setViewMode(ctx, tt.args.modeName)
+
+			if tt.wantErr {
+				if !strings.Contains(root.message, tt.wantMessage) {
+					t.Errorf("setViewMode() error message = %v, want %v", root.message, tt.wantMessage)
+				}
+			} else {
+				if !strings.Contains(root.message, tt.wantMessage) {
+					t.Errorf("setViewMode() message = %v, want %v", root.message, tt.wantMessage)
+				}
+				if root.Doc.Caption != tt.wantCaption {
+					t.Errorf("setViewMode() caption = %v, want %v", root.Doc.Caption, tt.wantCaption)
+				}
+				if root.Doc.Converter != tt.wantConverter {
+					t.Errorf("setViewMode() converter = %v, want %v", root.Doc.Converter, tt.wantConverter)
+				}
+			}
+		})
+	}
+}
+
+func TestRoot_toggleStatusLine(t *testing.T) {
+	root := rootHelper(t)
+	ctx := context.Background()
+
+	// Initially StatusLine should be false
+	root.Doc.StatusLine = false
+	root.toggleStatusLine(ctx)
+	if !root.Doc.StatusLine {
+		t.Errorf("toggleStatusLine() StatusLine = %v, want %v", root.Doc.StatusLine, true)
+	}
+	if root.message != "Status Line shown" {
+		t.Errorf("toggleStatusLine() message = %v, want %v", root.message, "Status Line shown")
+	}
+
+	// Toggle again, should be false
+	root.toggleStatusLine(ctx)
+	if root.Doc.StatusLine {
+		t.Errorf("toggleStatusLine() StatusLine = %v, want %v", root.Doc.StatusLine, false)
+	}
+	if root.message != "Status Line hidden" {
+		t.Errorf("toggleStatusLine() message = %v, want %v", root.message, "Status Line hidden")
+	}
+}
+
+func TestRoot_toggleSidebar(t *testing.T) {
+	root := rootHelper(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name           string
+		initialVisible bool
+		initialMode    SidebarMode
+		toggleMode     SidebarMode
+		wantVisible    bool
+		wantMode       SidebarMode
+	}{
+		{
+			name:           "Open Help Sidebar",
+			initialVisible: false,
+			initialMode:    SidebarModeNone,
+			toggleMode:     SidebarModeHelp,
+			wantVisible:    true,
+			wantMode:       SidebarModeHelp,
+		},
+		{
+			name:           "Close Sidebar when toggling same mode",
+			initialVisible: true,
+			initialMode:    SidebarModeHelp,
+			toggleMode:     SidebarModeHelp,
+			wantVisible:    false,
+			wantMode:       SidebarModeNone,
+		},
+		{
+			name:           "Switch Sidebar mode",
+			initialVisible: true,
+			initialMode:    SidebarModeHelp,
+			toggleMode:     SidebarModeMarks,
+			wantVisible:    true,
+			wantMode:       SidebarModeMarks,
+		},
+		{
+			name:           "Close Sidebar with SidebarModeNone",
+			initialVisible: true,
+			initialMode:    SidebarModeHelp,
+			toggleMode:     SidebarModeNone,
+			wantVisible:    false,
+			wantMode:       SidebarModeNone,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root.sidebarVisible = tt.initialVisible
+			root.sidebarMode = tt.initialMode
+			root.toggleSidebar(ctx, tt.toggleMode)
+			if root.sidebarVisible != tt.wantVisible {
+				t.Errorf("toggleSidebar() sidebarVisible = %v, want %v", root.sidebarVisible, tt.wantVisible)
+			}
+			if root.sidebarMode != tt.wantMode {
+				t.Errorf("toggleSidebar() sidebarMode = %v, want %v", root.sidebarMode, tt.wantMode)
+			}
+		})
+	}
+}
+
+func TestRoot_toggleSidebarHelp(t *testing.T) {
+	root := rootHelper(t)
+	ctx := context.Background()
+
+	// Initially sidebar should not be visible and mode should be SidebarModeNone
+	root.sidebarVisible = false
+	root.sidebarMode = SidebarModeNone
+
+	// Call toggleSidebarHelp to open the help sidebar
+	root.toggleSidebarHelp(ctx)
+	if !root.sidebarVisible {
+		t.Errorf("toggleSidebarHelp() sidebarVisible = %v, want %v", root.sidebarVisible, true)
+	}
+	if root.sidebarMode != SidebarModeHelp {
+		t.Errorf("toggleSidebarHelp() sidebarMode = %v, want %v", root.sidebarMode, SidebarModeHelp)
+	}
+
+	// Call again to close the sidebar
+	root.toggleSidebarHelp(ctx)
+	if root.sidebarVisible {
+		t.Errorf("toggleSidebarHelp() sidebarVisible = %v, want %v", root.sidebarVisible, false)
+	}
+	if root.sidebarMode != SidebarModeNone {
+		t.Errorf("toggleSidebarHelp() sidebarMode = %v, want %v", root.sidebarMode, SidebarModeNone)
+	}
+}
+
+func TestRoot_toggleSidebarMarkList(t *testing.T) {
+	root := rootHelper(t)
+	ctx := context.Background()
+
+	// Initially sidebar should not be visible and mode should be SidebarModeNone
+	root.sidebarVisible = false
+	root.sidebarMode = SidebarModeNone
+
+	// Call toggleSidebarMarkList to open the mark list sidebar
+	root.toggleSidebarMarks(ctx)
+	if !root.sidebarVisible {
+		t.Errorf("toggleSidebarMarkList() sidebarVisible = %v, want %v", root.sidebarVisible, true)
+	}
+	if root.sidebarMode != SidebarModeMarks {
+		t.Errorf("toggleSidebarMarkList() sidebarMode = %v, want %v", root.sidebarMode, SidebarModeMarks)
+	}
+
+	// Call again to close the sidebar
+	root.toggleSidebarMarks(ctx)
+	if root.sidebarVisible {
+		t.Errorf("toggleSidebarMarkList() sidebarVisible = %v, want %v", root.sidebarVisible, false)
+	}
+	if root.sidebarMode != SidebarModeNone {
+		t.Errorf("toggleSidebarMarkList() sidebarMode = %v, want %v", root.sidebarMode, SidebarModeNone)
+	}
+}
+
+func TestRoot_toggleSidebarDocList(t *testing.T) {
+	root := rootHelper(t)
+	ctx := context.Background()
+
+	// Initially sidebar should not be visible and mode should be SidebarModeNone
+	root.sidebarVisible = false
+	root.sidebarMode = SidebarModeNone
+
+	// Call toggleSidebarDocList to open the doc list sidebar
+	root.toggleSidebarDocList(ctx)
+	if !root.sidebarVisible {
+		t.Errorf("toggleSidebarDocList() sidebarVisible = %v, want %v", root.sidebarVisible, true)
+	}
+	if root.sidebarMode != SidebarModeDocList {
+		t.Errorf("toggleSidebarDocList() sidebarMode = %v, want %v", root.sidebarMode, SidebarModeDocList)
+	}
+
+	// Call again to close the sidebar
+	root.toggleSidebarDocList(ctx)
+	if root.sidebarVisible {
+		t.Errorf("toggleSidebarDocList() sidebarVisible = %v, want %v", root.sidebarVisible, false)
+	}
+	if root.sidebarMode != SidebarModeNone {
+		t.Errorf("toggleSidebarDocList() sidebarMode = %v, want %v", root.sidebarMode, SidebarModeNone)
+	}
+}
+
+func TestRoot_toggleSidebarSections(t *testing.T) {
+	root := rootHelper(t)
+	ctx := context.Background()
+
+	// Initially sidebar should not be visible and mode should be SidebarModeNone
+	root.sidebarVisible = false
+	root.sidebarMode = SidebarModeNone
+
+	// Call toggleSidebarSections to open the sections sidebar
+	root.toggleSidebarSections(ctx)
+	if !root.sidebarVisible {
+		t.Errorf("toggleSidebarSections() sidebarVisible = %v, want %v", root.sidebarVisible, true)
+	}
+	if root.sidebarMode != SidebarModeSections {
+		t.Errorf("toggleSidebarSections() sidebarMode = %v, want %v", root.sidebarMode, SidebarModeSections)
+	}
+
+	// Call again to close the sidebar
+	root.toggleSidebarSections(ctx)
+	if root.sidebarVisible {
+		t.Errorf("toggleSidebarSections() sidebarVisible = %v, want %v", root.sidebarVisible, false)
+	}
+	if root.sidebarMode != SidebarModeNone {
+		t.Errorf("toggleSidebarSections() sidebarMode = %v, want %v", root.sidebarMode, SidebarModeNone)
+	}
+}
+
+func TestRoot_goLineNth(t *testing.T) {
+	tcellNewScreen = fakeScreen
+	defer func() {
+		tcellNewScreen = tcell.NewScreen
+	}()
+
+	// Each line in wrap5.txt is 800 characters, so it wraps into 10 lines on an
+	// 80 column screen.
+	root := rootFileReadHelper(t, filepath.Join(testdata, "wrap5.txt"))
+	root.Doc.WrapMode = true
+	root.prepareScreen()
+
+	// "3.n" moves to line 3 and the nTh wrapping line of it.
+	for nTh := 1; nTh < 10; nTh++ {
+		input := fmt.Sprintf("3.%d", nTh)
+		root.goLine(input)
+		want := fmt.Sprintf("Moved to line 3.%d", nTh)
+		if root.message != want {
+			t.Errorf("goLine(%q) message = %q, want %q", input, root.message, want)
+		}
+		if wantX := nTh * 80; root.Doc.topLX != wantX {
+			t.Errorf("goLine(%q) topLX = %d, want %d", input, root.Doc.topLX, wantX)
+		}
+	}
+}

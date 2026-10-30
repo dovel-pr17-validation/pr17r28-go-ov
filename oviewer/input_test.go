@@ -1,0 +1,1064 @@
+package oviewer
+
+import (
+	"context"
+	"testing"
+
+	"github.com/gdamore/tcell/v3"
+)
+
+func candidateHelper() *candidate {
+	return &candidate{
+		list: []string{"a", "b", "c"},
+	}
+}
+
+func TestInput_insertJoinedGrapheme(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		value  string
+		cursor int
+		insert string
+		want   string
+	}{
+		{"flag", "🇺x", 2, "🇸", "🇺🇸!x"},
+		{"skin tone", "👍x", 2, "🏽", "👍🏽!x"},
+		{"joined emoji", "👩\u200dx", 2, "💻", "👩\u200d💻!x"},
+		{"variation selector", "❤x", 1, "\ufe0f", "❤️!x"},
+		{"tab before emoji", "\t👍x", 4, "🏽", "\t👍🏽!x"},
+		{"ASCII", "ax", 1, "b", "ab!x"},
+		{"combining accent", "ex", 1, "\u0301", "e\u0301!x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := &Input{value: tt.value, cursorX: tt.cursor}
+			input.keyEvent(tcell.NewEventKey(tcell.KeyRune, tt.insert, 0))
+			input.keyEvent(tcell.NewEventKey(tcell.KeyRune, "!", 0))
+			if input.value != tt.want {
+				t.Errorf("input after insertion = %q, want %q", input.value, tt.want)
+			}
+		})
+	}
+}
+
+func TestInput_keyEvent(t *testing.T) {
+	t.Parallel()
+	type fields struct {
+		value   string
+		cursorX int
+	}
+	type args struct {
+		evKey *tcell.EventKey
+	}
+	tests := []struct {
+		name      string
+		fields    fields
+		args      args
+		want      bool
+		wantValue string
+	}{
+		{
+			name: "key enter",
+			fields: fields{
+				value:   "test",
+				cursorX: 4,
+			},
+			args: args{
+				evKey: tcell.NewEventKey(tcell.KeyEnter, "", 0),
+			},
+			want:      true,
+			wantValue: "test",
+		},
+		{
+			name: "key cancel",
+			fields: fields{
+				value:   "test",
+				cursorX: 4,
+			},
+			args: args{
+				evKey: tcell.NewEventKey(tcell.KeyEscape, "", 0),
+			},
+			want:      false,
+			wantValue: "",
+		},
+		{
+			name: "key rune",
+			fields: fields{
+				value:   "test",
+				cursorX: 4,
+			},
+			args: args{
+				evKey: tcell.NewEventKey(tcell.KeyRune, "a", 0),
+			},
+			want:      false,
+			wantValue: "testa",
+		},
+		{
+			name: "key tab",
+			fields: fields{
+				value:   "test",
+				cursorX: 4,
+			},
+			args: args{
+				evKey: tcell.NewEventKey(tcell.KeyTAB, "", 0),
+			},
+			want:      false,
+			wantValue: "test\t",
+		},
+		{
+			name: "key backspace",
+			fields: fields{
+				value:   "test",
+				cursorX: 4,
+			},
+			args: args{
+				evKey: tcell.NewEventKey(tcell.KeyBackspace, "", 0),
+			},
+			want:      false,
+			wantValue: "tes",
+		},
+		{
+			name: "key delete",
+			fields: fields{
+				value:   "test",
+				cursorX: 0,
+			},
+			args: args{
+				evKey: tcell.NewEventKey(tcell.KeyDelete, "", 0),
+			},
+			want:      false,
+			wantValue: "est",
+		},
+		{
+			name: "key left",
+			fields: fields{
+				value:   "test",
+				cursorX: 4,
+			},
+			args: args{
+				evKey: tcell.NewEventKey(tcell.KeyLeft, "", 0),
+			},
+			want:      false,
+			wantValue: "test",
+		},
+		{
+			name: "key right",
+			fields: fields{
+				value:   "test",
+				cursorX: 0,
+			},
+			args: args{
+				evKey: tcell.NewEventKey(tcell.KeyRight, "", 0),
+			},
+			want:      false,
+			wantValue: "test",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := &Input{
+				value:   tt.fields.value,
+				cursorX: tt.fields.cursorX,
+			}
+			got := input.keyEvent(tt.args.evKey)
+			if got != tt.want {
+				t.Errorf("Input.keyEvent() = %v, want %v", got, tt.want)
+			}
+			if tt.wantValue != input.value {
+				t.Errorf("Input.value = %v, want %v", input.value, tt.wantValue)
+			}
+		})
+	}
+}
+
+func Test_candidate_up(t *testing.T) {
+	type fields struct {
+		list []string
+		p    int
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		want   string
+	}{
+		{
+			name: "testUp1",
+			fields: fields{
+				list: []string{"a", "b", "c"},
+				p:    2,
+			},
+			want: "b",
+		},
+		{
+			name: "testUp2",
+			fields: fields{
+				list: []string{"a", "b", "c"},
+				p:    0,
+			},
+			want: "c",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := blankCandidate()
+			c.list = tt.fields.list
+			c.p = tt.fields.p
+			if got := c.up(); got != tt.want {
+				t.Errorf("candidate.up() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_candidate_down(t *testing.T) {
+	type fields struct {
+		list []string
+		p    int
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		want   string
+	}{
+		{
+			name: "testDown1",
+			fields: fields{
+				list: []string{"a", "b", "c"},
+				p:    0,
+			},
+			want: "b",
+		},
+		{
+			name: "testDown2",
+			fields: fields{
+				list: []string{"a", "b", "c"},
+				p:    2,
+			},
+			want: "a",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := blankCandidate()
+			c.list = tt.fields.list
+			c.p = tt.fields.p
+			if got := c.down(); got != tt.want {
+				t.Errorf("candidate.down() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInput_previous(t *testing.T) {
+	type fields struct {
+		Event   Eventer
+		value   string
+		cursorX int
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		want   string
+	}{
+		{
+			name: "testPrevious",
+			fields: fields{
+				Event:   newSearchEvent(candidateHelper(), forward),
+				value:   "test",
+				cursorX: 4,
+			},
+			want: "c",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := &Input{
+				Event:   tt.fields.Event,
+				value:   tt.fields.value,
+				cursorX: tt.fields.cursorX,
+			}
+			input.previous()
+			input.previous()
+			if input.value != tt.want {
+				t.Errorf("Input.value = %v, want %v", input.value, tt.want)
+			}
+		})
+	}
+}
+
+func TestInput_next(t *testing.T) {
+	type fields struct {
+		Event   Eventer
+		value   string
+		cursorX int
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		want   string
+	}{
+		{
+			name: "testNext",
+			fields: fields{
+				Event:   newSearchEvent(candidateHelper(), forward),
+				value:   "test",
+				cursorX: 4,
+			},
+			want: "a",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := &Input{
+				Event:   tt.fields.Event,
+				value:   tt.fields.value,
+				cursorX: tt.fields.cursorX,
+			}
+			input.next()
+			if input.value != tt.want {
+				t.Errorf("Input.value = %v, want %v", input.value, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_inputPrompt(t *testing.T) {
+	root := rootHelper(t)
+	ctx := context.Background()
+	root.inputDelimiter(ctx)
+	if root.inputPrompt() != "Delimiter:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Delimiter:")
+	}
+	root.inputHeader(ctx)
+	if root.inputPrompt() != "Header length:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Header length:")
+	}
+	root.inputSkipLines(ctx)
+	if root.inputPrompt() != "Skip lines:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Skip lines:")
+	}
+	root.inputGoLine(ctx)
+	if root.inputPrompt() != "Goto line:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Goto line:")
+	}
+	root.inputMultiColor(ctx)
+	if root.inputPrompt() != "Multi color:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Multi color:")
+	}
+	root.input.Event = normal()
+	if root.inputPrompt() != "" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "")
+	}
+	root.inputForwardSearch(ctx)
+	if root.inputPrompt() != "/" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "/")
+	}
+	root.inputBackSearch(ctx)
+	if root.inputPrompt() != "?" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "?")
+	}
+	root.inputSearchFilter(ctx)
+	if root.inputPrompt() != "&" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "&")
+	}
+	root.inputJumpTarget(ctx)
+	if root.inputPrompt() != "Jump target line:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Jump target line:")
+	}
+	root.inputSaveBuffer(ctx)
+	if root.inputPrompt() != "(Save)file:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "(Save)file:")
+	}
+	root.inputViewMode(ctx)
+	if root.inputPrompt() != "Mode:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Mode:")
+	}
+	root.inputWatchInterval(ctx)
+	if root.inputPrompt() != "Watch interval:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Watch interval:")
+	}
+	root.inputWriteBA(ctx)
+	if root.inputPrompt() != "WriteAndQuit Before:After:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "WriteAndQuit Before:After:")
+	}
+	root.inputTabWidth(ctx)
+	if root.inputPrompt() != "TAB width:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "TAB width:")
+	}
+	root.inputBreakIndent(ctx)
+	if root.inputPrompt() != "Break indent:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Break indent:")
+	}
+	root.inputSignMode(ctx)
+	if root.inputPrompt() != "Sign mode (bitmask):" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Sign mode (bitmask):")
+	}
+	root.inputSectionDelimiter(ctx)
+	if root.inputPrompt() != "Section delimiter:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Section delimiter:")
+	}
+	root.inputSectionStart(ctx)
+	if root.inputPrompt() != "Section start:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Section start:")
+	}
+	root.inputSectionNum(ctx)
+	if root.inputPrompt() != "Section Num:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Section Num:")
+	}
+	root.inputSectionStart(ctx)
+	if root.inputPrompt() != "Section start:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Section start:")
+	}
+	root.inputConvert(ctx)
+	if root.inputPrompt() != "Convert:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Convert:")
+	}
+	root.inputVerticalHeader(ctx)
+	if root.inputPrompt() != "Vertical header length:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Vertical header length:")
+	}
+	root.inputHeaderColumn(ctx)
+	if root.inputPrompt() != "Header column:" {
+		t.Errorf("Root.inputMode() = %v, want %v", root.inputPrompt(), "Header column:")
+	}
+}
+
+func TestRoot_inputState(t *testing.T) {
+	root := rootHelper(t)
+	ctx := context.Background()
+	root.inputForwardSearch(ctx)
+	root.setSearcher("test", false)
+	root.toggleCaseSensitive(ctx)
+	if root.searchOpt != "(Aa)" {
+		t.Errorf("Root.inputState() = %v, want %v", root.searchOpt, "(Aa)")
+	}
+	root.toggleSmartCaseSensitive(ctx)
+	if root.searchOpt != "(S)" {
+		t.Errorf("Root.inputState() = %v, want %v", root.searchOpt, "(S)")
+	}
+	root.toggleIncSearch(ctx)
+	if root.searchOpt != "(I)(S)" {
+		t.Errorf("Root.inputState() = %v, want %v", root.searchOpt, "(I)(S)")
+	}
+	root.toggleRegexpSearch(ctx)
+	if root.searchOpt != "(R)(I)(S)" {
+		t.Errorf("Root.inputState() = %v, want %v", root.searchOpt, "(R)(I)(S)")
+	}
+	if root.searchOpt != "(R)(I)(S)" {
+		t.Errorf("Root.inputState() = %v, want %v", root.searchOpt, "(R)(I)(S)")
+	}
+	root.toggleNonMatch(ctx)
+	root.inputBackSearch(ctx)
+	if root.searchOpt != "(R)(I)(S)" {
+		t.Errorf("Root.inputState() = %v, want %v", root.searchOpt, "(R)(I)(S)")
+	}
+	root.inputSearchFilter(ctx)
+	root.toggleNonMatch(ctx)
+	if root.searchOpt != "Non-match(R)(S)" {
+		t.Errorf("Root.inputState() = %v, want %v", root.searchOpt, "Non-match(R)(S)")
+	}
+	root.candidatePrevious(ctx)
+	if root.searchOpt != "Non-match(R)(S)" {
+		t.Errorf("Root.inputState() = %v, want %v", root.searchOpt, "Non-match(R)(S)")
+	}
+	root.candidateNext(ctx)
+	if root.searchOpt != "Non-match(R)(S)" {
+		t.Errorf("Root.inputState() = %v, want %v", root.searchOpt, "Non-match(R)(S)")
+	}
+	root.inputHeader(ctx)
+	root.setPromptOpt()
+	if root.searchOpt != "" {
+		t.Errorf("Root.inputState() = %v, want %v", root.searchOpt, "")
+	}
+}
+
+func TestRoot_inputUp(t *testing.T) {
+	type args struct {
+		str string
+	}
+	tests := []struct {
+		name  string
+		args  args
+		Event Eventer
+		want  string
+	}{
+		{
+			name: "testConvertType",
+			args: args{str: "raw"},
+			Event: newConvertTypeEvent(
+				&candidate{
+					list: []string{convEscaped, convRaw, convAlign},
+					p:    2,
+				},
+			),
+			want: "raw",
+		},
+		{
+			name: "testDelimiter",
+			args: args{str: ","},
+			Event: newDelimiterEvent(
+				&candidate{
+					list: []string{",", "|", "\t"},
+					p:    2,
+				},
+			),
+			want: "|",
+		},
+		{
+			name: "testGoto",
+			args: args{str: "1000"},
+			Event: newGotoEvent(
+				&candidate{
+					list: []string{"1", "10", "100"},
+					p:    2,
+				},
+			),
+			want: "10",
+		},
+		{
+			name:  "testHeader",
+			args:  args{str: "1"},
+			Event: newHeaderEvent(),
+			want:  "2",
+		},
+		{
+			name:  "testHeaderColumn",
+			args:  args{str: "1"},
+			Event: newHeaderColumnEvent(),
+			want:  "2",
+		},
+		{
+			name: "testJumpTarget",
+			args: args{str: "1000"},
+			Event: newJumpTargetEvent(
+				&candidate{
+					list: []string{"1", "10", "100"},
+					p:    2,
+				},
+			),
+			want: "10",
+		},
+		{
+			name: "testMultiColor",
+			args: args{str: "1"},
+			Event: newMultiColorEvent(
+				&candidate{
+					list: []string{"1", "2", "3"},
+					p:    2,
+				},
+			),
+			want: "2",
+		},
+		{
+			name:  "testNormal",
+			args:  args{str: "test"},
+			Event: normal(),
+			want:  "",
+		},
+		{
+			name: "testSaveBuffer",
+			args: args{str: "test"},
+			Event: newSaveBufferEvent(
+				&candidate{
+					list: []string{"test", "test2", "test3"},
+					p:    2,
+				},
+			),
+			want: "test2",
+		},
+		{
+			name: "testSectionDelimiter",
+			Event: newSectionDelimiterEvent(
+				&candidate{
+					list: []string{",", "|", "\t"},
+					p:    2,
+				},
+			),
+			want: "|",
+		},
+		{
+			name:  "testSectionNum",
+			args:  args{str: "1"},
+			Event: newSectionNumEvent(),
+			want:  "2",
+		},
+		{
+			name: "testSectionStart",
+			Event: newSectionStartEvent(
+				&candidate{
+					list: []string{"1", "10", "100"},
+					p:    2,
+				},
+			),
+			want: "10",
+		},
+		{
+			name:  "testSkipLines",
+			args:  args{str: "1"},
+			Event: newSkipLinesEvent(),
+			want:  "2",
+		},
+		{
+			name: "testTabWidth",
+			Event: newTabWidthEvent(
+				&candidate{
+					list: []string{"4", "8", "3"},
+					p:    2,
+				},
+			),
+			want: "8",
+		},
+		{
+			name:  "testVerticalHeader",
+			args:  args{str: "1"},
+			Event: newVerticalHeaderEvent(),
+			want:  "2",
+		},
+		{
+			name: "testViewMode",
+			args: args{str: "test"},
+			Event: newViewModeEvent(
+				&candidate{
+					list: []string{"test", "test2", "test3"},
+					p:    2,
+				},
+			),
+			want: "test2",
+		},
+		{
+			name: "testWatchInterval",
+			args: args{str: "1"},
+			Event: newWatchIntervalEvent(
+				&candidate{
+					list: []string{"1", "2", "3"},
+					p:    2,
+				},
+			),
+			want: "2",
+		},
+		{
+			name: "testWriteBAMode",
+			args: args{str: "test"},
+			Event: newWriteBAEvent(
+				&candidate{
+					list: []string{"test", "test2", "test3"},
+					p:    2,
+				},
+			),
+			want: "test2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inputEvent := tt.Event
+			got := inputEvent.Up(tt.args.str)
+			if got != tt.want {
+				t.Errorf("Root.inputUp() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoot_inputDown(t *testing.T) {
+	type args struct {
+		str string
+	}
+	tests := []struct {
+		name  string
+		args  args
+		Event Eventer
+		want  string
+	}{
+		{
+			name: "testConvertType",
+			args: args{str: "raw"},
+			Event: newConvertTypeEvent(
+				&candidate{
+					list: []string{convEscaped, convRaw, convAlign},
+					p:    0,
+				},
+			),
+			want: "raw",
+		},
+		{
+			name: "testDelimiter",
+			args: args{str: ","},
+			Event: newDelimiterEvent(
+				&candidate{
+					list: []string{",", "|", "\t"},
+					p:    0,
+				},
+			),
+			want: "|",
+		},
+		{
+			name: "testGoto",
+			args: args{str: "1000"},
+			Event: newGotoEvent(
+				&candidate{
+					list: []string{"1", "10", "100"},
+					p:    0,
+				},
+			),
+			want: "10",
+		},
+		{
+			name:  "testHeaderColumn",
+			args:  args{str: "1"},
+			Event: newHeaderColumnEvent(),
+			want:  "0",
+		},
+		{
+			name:  "testHeader",
+			args:  args{str: "3"},
+			Event: newHeaderEvent(),
+			want:  "2",
+		},
+		{
+			name: "testJumpTarget",
+			args: args{str: "1000"},
+			Event: newJumpTargetEvent(
+				&candidate{
+					list: []string{"1", "10", "100"},
+					p:    0,
+				},
+			),
+			want: "10",
+		},
+		{
+			name: "testMultiColor",
+			args: args{str: "1"},
+			Event: newMultiColorEvent(
+				&candidate{
+					list: []string{"1", "2", "3"},
+					p:    0,
+				},
+			),
+			want: "2",
+		},
+		{
+			name:  "testNormal",
+			args:  args{str: "test"},
+			Event: normal(),
+			want:  "",
+		},
+		{
+			name: "testSaveBuffer",
+			args: args{str: "test"},
+			Event: newSaveBufferEvent(
+				&candidate{
+					list: []string{"test", "test2", "test3"},
+					p:    0,
+				},
+			),
+			want: "test2",
+		},
+		{
+			name: "testSectionDelimiter",
+			Event: newSectionDelimiterEvent(
+				&candidate{
+					list: []string{",", "|", "\t"},
+					p:    0,
+				},
+			),
+			want: "|",
+		},
+		{
+			name:  "testSectionNum",
+			args:  args{str: "1"},
+			Event: newSectionNumEvent(),
+			want:  "0",
+		},
+		{
+			name: "testSectionStart",
+			Event: newSectionStartEvent(
+				&candidate{
+					list: []string{"1", "10", "100"},
+					p:    0,
+				},
+			),
+			want: "10",
+		},
+		{
+			name:  "testSkipLines",
+			args:  args{str: "1"},
+			Event: newSkipLinesEvent(),
+			want:  "0",
+		},
+		{
+			name: "testTabWidth",
+			args: args{str: "4"},
+			Event: newTabWidthEvent(
+				&candidate{
+					list: []string{"4", "8", "3"},
+					p:    2,
+				},
+			),
+			want: "4",
+		},
+		{
+			name:  "testVerticalHeader",
+			args:  args{str: "4"},
+			Event: newVerticalHeaderEvent(),
+			want:  "3",
+		},
+		{
+			name: "testViewMode",
+			args: args{str: "test"},
+			Event: newViewModeEvent(
+				&candidate{
+					list: []string{"test", "test2", "test3"},
+					p:    0,
+				},
+			),
+			want: "test2",
+		},
+		{
+			name: "testWatchInterval",
+			args: args{str: "1"},
+			Event: newWatchIntervalEvent(
+				&candidate{
+					list: []string{"1", "2", "3"},
+					p:    0,
+				},
+			),
+			want: "2",
+		},
+		{
+			name: "testWriteBAMode",
+			args: args{str: "test"},
+			Event: newWriteBAEvent(
+				&candidate{
+					list: []string{"test", "test2", "test3"},
+					p:    0,
+				},
+			),
+			want: "test2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.Event.Down(tt.args.str)
+			if got != tt.want {
+				t.Errorf("Root.inputDown() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_stringWidth(t *testing.T) {
+	tests := []struct {
+		name string
+		str  string
+		want int
+	}{
+		{
+			name: "empty string",
+			str:  "",
+			want: 0,
+		},
+		{
+			name: "ascii string",
+			str:  "test",
+			want: 4,
+		},
+		{
+			name: "single tab",
+			str:  "\t",
+			want: 2,
+		},
+		{
+			name: "multiple tabs",
+			str:  "\t\t\t",
+			want: 6,
+		},
+		{
+			name: "tab with text",
+			str:  "test\tvalue",
+			want: 11,
+		},
+		{
+			name: "wide characters",
+			str:  "テスト",
+			want: 6,
+		},
+		{
+			name: "mixed ascii and wide",
+			str:  "test テスト",
+			want: 11,
+		},
+		{
+			name: "tab with wide characters",
+			str:  "\tテスト",
+			want: 8,
+		},
+		{
+			name: "emoji",
+			str:  "👍",
+			want: 2,
+		},
+		{
+			name: "mixed content",
+			str:  "a\tb👍c",
+			want: 7,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stringWidth(tt.str); got != tt.want {
+				t.Errorf("stringWidth() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_splitAtWidth(t *testing.T) {
+	tests := []struct {
+		name        string
+		s           string
+		targetWidth int
+		wantLeft    string
+		wantRight   string
+	}{
+		{
+			name:        "empty string",
+			s:           "",
+			targetWidth: 5,
+			wantLeft:    "",
+			wantRight:   "",
+		},
+		{
+			name:        "zero width",
+			s:           "test",
+			targetWidth: 0,
+			wantLeft:    "",
+			wantRight:   "test",
+		},
+		{
+			name:        "split ascii at middle",
+			s:           "test",
+			targetWidth: 2,
+			wantLeft:    "te",
+			wantRight:   "st",
+		},
+		{
+			name:        "split ascii at end",
+			s:           "test",
+			targetWidth: 4,
+			wantLeft:    "test",
+			wantRight:   "",
+		},
+		{
+			name:        "split beyond length",
+			s:           "test",
+			targetWidth: 10,
+			wantLeft:    "test",
+			wantRight:   "",
+		},
+		{
+			name:        "split with single tab",
+			s:           "\t",
+			targetWidth: 1,
+			wantLeft:    "",
+			wantRight:   "\t",
+		},
+		{
+			name:        "split with tab width 2",
+			s:           "\t",
+			targetWidth: 2,
+			wantLeft:    "\t",
+			wantRight:   "",
+		},
+		{
+			name:        "split with tab and text before",
+			s:           "ab\tcd",
+			targetWidth: 3,
+			wantLeft:    "ab",
+			wantRight:   "\tcd",
+		},
+		{
+			name:        "split with tab and text after width",
+			s:           "ab\tcd",
+			targetWidth: 4,
+			wantLeft:    "ab\t",
+			wantRight:   "cd",
+		},
+		{
+			name:        "split multiple tabs",
+			s:           "\t\t\t",
+			targetWidth: 4,
+			wantLeft:    "\t\t",
+			wantRight:   "\t",
+		},
+		{
+			name:        "split wide characters",
+			s:           "テスト",
+			targetWidth: 4,
+			wantLeft:    "テス",
+			wantRight:   "ト",
+		},
+		{
+			name:        "split wide characters exact",
+			s:           "テスト",
+			targetWidth: 6,
+			wantLeft:    "テスト",
+			wantRight:   "",
+		},
+		{
+			name:        "split mixed ascii and wide",
+			s:           "testテスト",
+			targetWidth: 8,
+			wantLeft:    "testテス",
+			wantRight:   "ト",
+		},
+		{
+			name:        "split with emoji",
+			s:           "a👍b",
+			targetWidth: 2,
+			wantLeft:    "a",
+			wantRight:   "👍b",
+		},
+		{
+			name:        "split with emoji at boundary",
+			s:           "a👍b",
+			targetWidth: 3,
+			wantLeft:    "a👍",
+			wantRight:   "b",
+		},
+		{
+			name:        "split complex mixed content",
+			s:           "a\tテスト👍",
+			targetWidth: 5,
+			wantLeft:    "a\tテ",
+			wantRight:   "スト👍",
+		},
+		{
+			name:        "split at tab boundary",
+			s:           "test\tvalue",
+			targetWidth: 6,
+			wantLeft:    "test\t",
+			wantRight:   "value",
+		},
+		{
+			name:        "split just before tab",
+			s:           "test\tvalue",
+			targetWidth: 5,
+			wantLeft:    "test",
+			wantRight:   "\tvalue",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotLeft, gotRight := splitAtWidth(tt.s, tt.targetWidth)
+			if gotLeft != tt.wantLeft {
+				t.Errorf("splitAtWidth() gotLeft = %q, want %q", gotLeft, tt.wantLeft)
+			}
+			if gotRight != tt.wantRight {
+				t.Errorf("splitAtWidth() gotRight = %q, want %q", gotRight, tt.wantRight)
+			}
+		})
+	}
+}

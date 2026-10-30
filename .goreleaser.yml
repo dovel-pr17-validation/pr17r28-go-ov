@@ -1,0 +1,94 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod vendor
+builds:
+  -
+    id: ov-linux
+    binary: ov
+    ldflags:
+      - -X main.Version={{.Version}}
+      - -X main.Revision={{.ShortCommit}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - '386'
+      - amd64
+      - arm
+      - arm64
+  -
+    id: ov-other
+    binary: ov
+    ldflags:
+      - -X main.Version={{.Version}}
+      - -X main.Revision={{.ShortCommit}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - windows
+      - freebsd
+    goarch:
+      - '386'
+      - amd64
+      - arm64
+
+archives:
+  -
+    id: ov-archives
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    ids:
+      - ov-linux
+      - ov-other
+    files:
+      - LICENSE
+      - README.md
+      - ov.yaml
+      - ov-less.yaml
+    formats: [ 'zip' ]
+
+nfpms:
+  -
+    id: ov-nfpms
+    file_name_template: "{{ .ConventionalFileName }}"
+    ids:
+      - ov-linux
+    homepage: https://github.com/noborus/ov
+    maintainer: Noboru Saito <noborusai@gmail.com>
+    description: ov is a feature rich terminal pager.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    epoch: "1"
+
+winget:
+  -
+    name: ov
+    publisher: noborus
+    author: Noboru Saito
+    short_description: Feature rich terminal pager
+    homepage: https://noborus.github.io/ov/
+    license: MIT
+    repository:
+      owner: noborus
+      name: winget-pkgs
+      branch: "ov-{{ .Version }}"
+      token: "{{ .Env.APP_TOKEN }}"
+      pull_request:
+        enabled: false
+        draft: false
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
+
+source:
+  enabled: true
+  files:
+    - vendor
